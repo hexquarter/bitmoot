@@ -7,6 +7,8 @@ For:
 - Sovereign organization
 - Decentralized structures
 
+![](./src/assets/app.png)
+
 ## Motivation
 
 Many DAOs exists, but real sovereign ones don't.
