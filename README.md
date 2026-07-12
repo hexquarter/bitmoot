@@ -1,73 +1,44 @@
-# React + TypeScript + Vite
+# BitMoot
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+A DAO platform built entirely on Bitcoin, Nostr, and Lightning.
 
-Currently, two official plugins are available:
+For:
+- Bitcoin/Nostr communities
+- Sovereign organization
+- Decentralized structures
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Motivation
 
-## React Compiler
+Many DAOs exists, but real sovereign ones don't.
+- Ethereum-dependent: 99% of DAOs require ETH gas, EVM smart contracts, and token bridges. Not self-sovereign.
+- No Bitcoin-native option: Bitcoin communities — the ones who care most about sovereignty — have no DAO tooling that matches their values.
+- Terrible UX: Seed phrases, gas fees, and wallet popups make onboarding impossible for non-crypto people.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Sovereign Stack
 
-## Expanding the ESLint configuration
+BitMoot resolves that issue by coupling to sovereign technology for more freedom and ownership:
+- Identity: Passkey -> Nostr npub -> Bitcoin wallet
+- Governance: Nostr events (multi-relay) · Bitcoin L1 anchoring
+- Treasury: Bitcoin Taproot multisig · Miniscript · Timelock backstop
+- Execution: Coordinator-optional PSBT · Any member can execute
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+## Governance design
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+BitMoot addresses dynamic membership but with a main execution plan.
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+General members: 
+- hold governance token (Spark BTKN tokens)
+- vote on proposals via signed Nostr events
+- Unlimited, join freely — no on-chain footprint
+- Earn governance token for contributions automatically
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+Council (co-signers):
+- Elected by general members, 5-9 seats
+- Hold keys in Bitcoin Taproot multisig
+- Fixed terms — rotate via one on-chain tx
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Governance elects council.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## License
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+MIT
