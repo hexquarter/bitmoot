@@ -3,7 +3,7 @@ name: Deploy Website
 
 on:
   push:
-    branches: ["main"]
+    branches: ["master"]
     tags: ["v*"]
   workflow_dispatch:
 
@@ -19,7 +19,7 @@ concurrency:
 jobs:
   deploy_website:
     name: Deploy website to GitHub Pages
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
