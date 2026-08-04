@@ -1,3 +1,4 @@
+import { useState, type FormEvent } from "react";
 import {
   Bitcoin, Zap, Shield, Vote, Wallet, Radio, ArrowRight,
   Users, Palette, Code2, HandCoins, Globe2, Rocket,
@@ -5,8 +6,6 @@ import {
   Lock, Send, Activity
 
 } from "lucide-react";
-
-import { IconBrandGithub } from '@tabler/icons-react'
 
 import ProposalImg from '../assets/proposals.png'
 import TreasuryImg from '../assets/treasury.png'
@@ -111,6 +110,37 @@ const stack = [
 ];
 
 export const Index = () => {
+  const [email, setEmail] = useState("");
+  const [status, setStatus] = useState<"idle" | "submitting" | "success" | "error">("idle");
+  const [feedback, setFeedback] = useState("");
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setStatus("submitting");
+    setFeedback("");
+
+    try {
+      const response = await fetch("https://formspree.io/f/xeeyyykg", {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+        },
+        body: new FormData(event.currentTarget),
+      });
+
+      if (response.ok) {
+        setStatus("success");
+        setFeedback("Thanks — you’re on the list. We’ll be in touch with early access updates.");
+        setEmail("");
+      } else {
+        throw new Error("Unable to submit your interest right now.");
+      }
+    } catch (error) {
+      setStatus("error");
+      setFeedback(error instanceof Error ? error.message : "Unable to submit your interest right now.");
+    }
+  };
+
   return (
     <div className="min-h-screen bg-background text-foreground">
       {/* HEADER */}
@@ -179,7 +209,7 @@ export const Index = () => {
                   href="#start"
                   className="group inline-flex items-center gap-2 font-mono text-xs tracking-wider uppercase px-5 py-3.5 rounded-md bg-primary text-primary-foreground hover:opacity-90 transition shadow-[var(--glow-primary)]"
                 >
-                  Launch your DAO <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition" />
+                  Self-govern what matters <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-0.5 transition" />
                 </a>
                 <a
                   href="#how"
@@ -451,13 +481,13 @@ export const Index = () => {
       </section> */}
 
       {/* PRICING */}
-      <section id="pricing" className="border-b border-border">
+      {/* <section id="pricing" className="border-b border-border">
         <div className="max-w-[1400px] mx-auto px-6 md:px-10 py-20">
           <div className="font-mono text-[10px] tracking-[0.25em] uppercase text-primary mb-3">
             Pricing
           </div>
           <h2 className="text-3xl md:text-5xl font-semibold tracking-tight leading-[1.1]">
-            Free to launch. <span className="font-serif italic font-normal text-primary">Honest</span> when you scale.
+            Join the <span className="font-serif italic font-normal text-primary">waitlist</span> for early access.
           </h2>
 
           <div className="mt-10 grid md:grid-cols-2 lg:w-2/3 mx-auto gap-4">
@@ -465,18 +495,18 @@ export const Index = () => {
               {
                 name: "Starter",
                 price: "$0",
-                desc: "Spin up a DAO, invite friends, run your first vote.",
-                items: ["Unlimited members", "Multisig treasury", "Proposals & voting", "Manual coordination"],
-                cta: "Start for free",
+                desc: "Get notified when DAO tooling is ready and reserve your spot on the early-access list.",
+                items: ["Launch updates", "Early-access announcements", "Priority onboarding", "No spam"],
+                cta: "Register interest",
                 featured: false,
               },
               {
                 name: "Collective",
                 price: "$49",
                 sub: "/ mo",
-                desc: "For studios, guilds and clubs that ship every week.",
-                items: ["Coordinator service", "Automated voting & payments", "USDB treasury (non-volatile) with 3.5-6% APY yield", , "Dedicated support"],
-                cta: "Scale with automation",
+                desc: "For builders who want to stay close to the rollout and hear about new features first.",
+                items: ["Launch updates", "Early-access announcements", "Priority onboarding", "Dedicated support"],
+                cta: "Join the list",
                 featured: true,
               }
             ].map((p) => (
@@ -519,7 +549,7 @@ export const Index = () => {
             ))}
           </div>
         </div>
-      </section>
+      </section> */}
 
       {/* CTA */}
       <section id="start" className="border-b border-border">
@@ -528,22 +558,42 @@ export const Index = () => {
             Infrastructure that <span className="font-serif italic font-normal text-primary">won't quit</span>.
           </h2>
           <p className="mt-5 max-w-xl mx-auto text-muted-foreground font-light">
-            Start free. Invite five friends. Run a vote tonight. The protocol is open, the keys are yours, and the treasury settles on Bitcoin.
+            {/*Start free. Invite five friends. Run a vote tonight. The protocol is open, the keys are yours, and the treasury settles on Bitcoin.*/}
+            Register your interest now and we’ll keep you posted on launch updates, early access, and upcoming DAO tooling.
           </p>
-          <div className="mt-8 flex flex-wrap items-center justify-center gap-3">
-            <a
-              href="#"
-              className="inline-flex items-center gap-2 font-mono text-xs tracking-wider uppercase px-5 py-3 rounded-sm bg-primary text-primary-foreground hover:opacity-90 transition shadow-[var(--glow-primary)]"
-            >
-              Create my DAO <ArrowRight className="w-3.5 h-3.5" />
-            </a>
-            {/* <a
-              href="#"
-              className="inline-flex items-center gap-2 font-mono text-xs tracking-wider uppercase px-5 py-3 rounded-sm border border-border-bright hover:bg-bg-elev-1 transition"
-            >
-              <IconBrandGithub className="w-3.5 h-3.5" /> Read the spec
-            </a> */}
-          </div>
+          <form onSubmit={handleSubmit} className="mt-8 mx-auto max-w-xl rounded-xl border border-border bg-bg-elev-1/70 p-6 text-left shadow-[var(--glow-primary)]/10">
+            <div className="flex flex-col gap-3 md:flex-row">
+              <label className="flex-1">
+                <span className="sr-only">Email address</span>
+                <input
+                  type="email"
+                  name="email"
+                  required
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  placeholder="Enter your email"
+                  className="w-full rounded-md border border-border bg-background px-4 py-3 text-sm text-foreground outline-none ring-0 placeholder:text-muted-foreground focus:border-primary"
+                />
+              </label>
+              <button
+                type="submit"
+                disabled={status === "submitting"}
+                className="inline-flex items-center justify-center gap-2 font-mono text-xs tracking-wider uppercase px-5 py-3 rounded-sm bg-primary text-primary-foreground hover:opacity-90 transition shadow-[var(--glow-primary)] disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                {status === "submitting" ? "Submitting…" : "Get involved"}
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <input type="hidden" name="message" value="Interest in BitMoot early access." />
+            <p className="mt-3 text-sm text-muted-foreground font-light">
+              We’ll only email you with launch news, early access updates, and product announcements.
+            </p>
+            {feedback ? (
+              <p className={`mt-3 text-sm ${status === "success" ? "text-[var(--green)]" : "text-destructive"}`}>
+                {feedback}
+              </p>
+            ) : null}
+          </form>
         </div>
       </section>
 
