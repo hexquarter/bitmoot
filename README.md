@@ -43,4 +43,4 @@ Governance elects council.
 
 ## License
 
-MIT
+GPL
