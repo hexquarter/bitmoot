@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import ProposalImg from "../assets/proposals.png";
 import TreasuryImg from "../assets/treasury.png";
 import PaymentImg from "../assets/payments.png";
@@ -43,7 +44,7 @@ export function Index() {
       <header className="site-header">
         <a className="wordmark" href="/" aria-label="BitMoot home">BIT<span>MOOT</span><b>.</b></a>
         <nav className="site-nav" aria-label="Main navigation"><a href="#use-cases">Use cases</a><a href="#stack">The stack</a><a href="#self-sovereign">Self-sovereign</a></nav>
-        <a className="header-link" href="#start">OPEN A TREASURY <span>↗</span></a>
+        <Link className="header-link" to="/auth">OPEN A TREASURY <span>↗</span></Link>
       </header>
 
       <section className="hero-shell" aria-labelledby="hero-title">
@@ -51,7 +52,7 @@ export function Index() {
           <p className="eyebrow"><i /> BITCOIN-NATIVE DAO INFRASTRUCTURE</p>
           <h1 id="hero-title">Vote on Nostr.<br /><em>Custody</em> on Taproot.<br />Pay over Lightning.</h1>
           <p className="hero-summary">BitMoot is the operating layer for groups that govern together, hold their own keys, and move money without asking permission.</p>
-          <div className="hero-actions"><a className="button-primary" href="#start">Start a DAO <span>↗</span></a><a className="quiet-link" href="#proof">View a live DAO <span>→</span></a></div>
+          <div className="hero-actions"><Link className="button-primary" to="/auth">Start a DAO <span>↗</span></Link><a className="quiet-link" href="#proof">View a live DAO <span>→</span></a></div>
           <div className="trust-strip" aria-label="Trust signals"><a href="#proof"><MarkIcon type="audit" /> AUDIT LOG <span>verified</span></a><a href="#proof"><MarkIcon type="descriptor" /> DESCRIPTOR <span>bc1p…7k4q</span></a><a href="#proof"><MarkIcon type="builder" /> BUILT BY <span>BitMoot core</span></a></div>
         </div>
 

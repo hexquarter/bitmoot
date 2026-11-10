@@ -2,6 +2,7 @@
 import { BrowserRouter, Route, Routes } from 'react-router-dom'
 import { Index } from './pages/IndexPage'
 import { NotFound } from './pages/NotFoundPage'
+import { AuthPage } from './pages/AuthPage'
 import { AppPage } from './pages/AppPage'
 import { AppIndexPage } from './pages/app/IndexPage'
 import { ProposalsPage } from './pages/app/ProposalsPage'
@@ -17,6 +18,7 @@ function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/" element={<Index />} />
+          <Route path="/auth" element={<AuthPage />} />
           <Route path="/app" element={<AppPage />}>
             <Route index element={<AppIndexPage />} />
             <Route path='proposals' element={<ProposalsPage />} />
