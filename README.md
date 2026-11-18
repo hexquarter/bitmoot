@@ -43,7 +43,7 @@ Governance elects council.
 
 ## GitHub Pages deployment
 
-`.github/workflows/deploy.yml` builds and deploys the app on every push to `master` (and on manual dispatch). Requires Node 22.12+ because the Breez SDK rejects older versions.
+`.github/workflows/deploy.yml` builds and deploys the app on every push to `master` (and on manual dispatch). Requires Node 22.13+ because the Breez SDK and ESLint reject older versions.
 
 1. In **Settings → Pages**, set **Build and deployment → Source** to **GitHub Actions**.
 2. Add repository secrets:
