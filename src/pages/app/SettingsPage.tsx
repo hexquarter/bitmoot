@@ -1,8 +1,12 @@
 import { useState } from "react";
 import { toast } from "sonner";
-import { Shield, Radio, Key, Globe2, Trash2, Plus, Check, Copy, Bitcoin, Zap, FileWarning, type LucideIcon } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
+import { Shield, Radio, Key, Globe2, Trash2, Plus, Check, Copy, Bitcoin, Zap, FileWarning, LogOut, UserRound, Code2, type LucideIcon } from "lucide-react";
 import { useAuth } from "../../lib/auth";
-import { lockTreasury, npubToHex, treasurySeed, useOrg } from "../../lib/org";
+import { lockTreasury, npubToHex, shortNpub, treasurySeed, useOrg } from "../../lib/org";
+import { profileLabel, profileSubtitle, useProfile } from "../../lib/profile";
+import { logOut } from "../../lib/session";
 import { setSettings, useSettings, DEFAULT_RELAYS, type SparkNetwork } from "../../lib/settings";
 import { disconnectOrgWallet } from "../../lib/spark";
 
@@ -24,8 +28,10 @@ function Section({ icon: Icon, title, desc, children }: { icon: LucideIcon; titl
 }
 
 export function SettingsPage() {
+  const navigate = useNavigate();
   const org = useOrg();
   const auth = useAuth().signer;
+  const profile = useProfile(auth?.pubkey);
   const settings = useSettings();
 
   const [orgNpub, setOrgNpub] = useState(settings.activeOrgNpub ?? "");
@@ -42,6 +48,12 @@ export function SettingsPage() {
     setCopied(key);
     toast.success("Copied to clipboard");
     setTimeout(() => setCopied(null), 2000);
+  };
+
+  const handleSignOut = () => {
+    logOut();
+    toast.success("Signed out");
+    navigate("/auth", { replace: true });
   };
 
   const switchNetwork = (network: SparkNetwork) => {
@@ -93,8 +105,23 @@ export function SettingsPage() {
     <div className="space-y-6 max-w-3xl">
       <div>
         <h1 className="text-2xl md:text-3xl font-serif italic">Settings</h1>
-        <p className="mt-1 text-sm text-muted-foreground">Network, relays, org, and keys.</p>
+        <p className="mt-1 text-sm text-muted-foreground">Your Nostr identity, network, relays, org, and keys.</p>
       </div>
+
+      <Section icon={UserRound} title="Nostr profile" desc="Your public name and picture, stored as a signed Nostr event.">
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border bg-bg-elev-2/40 p-3">
+          <div className="min-w-0">
+            <div className="text-sm font-medium">{auth ? profileLabel(auth.pubkey, profile) : "Not signed in"}</div>
+            <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
+              {auth ? profileSubtitle(profile) || shortNpub(auth.npub) : "—"}
+            </div>
+            <div className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground-2">
+              {auth ? auth.npub : "—"}
+            </div>
+          </div>
+          <Link to="/app/profile" className="text-xs text-primary hover:underline">Edit profile →</Link>
+        </div>
+      </Section>
 
       <Section icon={Zap} title="Spark network" desc="Which Spark network the org wallet connects to.">
         <div className="flex gap-2">
@@ -117,6 +144,23 @@ export function SettingsPage() {
           {settings.network === "REGTEST"
             ? "Regtest needs a local sparkd + regtest bitcoin node; set the explorer API below (e.g. http://localhost:3000/api)."
             : "Mainnet uses Spark's production infrastructure. Real money — be careful."}
+        </p>
+      </Section>
+
+      <Section icon={Code2} title="Advanced mode" desc="Show raw Nostr events, signatures, and PSBT data when reviewing proposals.">
+        <button
+          onClick={() => setSettings({ advancedMode: !settings.advancedMode })}
+          className={
+            "h-10 w-full rounded-md border text-sm font-medium transition " +
+            (settings.advancedMode
+              ? "border-primary/60 bg-primary-dim text-primary"
+              : "border-border text-muted-foreground hover:border-border-bright hover:text-foreground")
+          }
+        >
+          {settings.advancedMode ? "On — cryptographic details visible" : "Off — simple view"}
+        </button>
+        <p className="text-[11px] text-muted-foreground-2">
+          Default off so everyday voting stays simple. You can also toggle it inside each proposal review.
         </p>
       </Section>
 
@@ -196,6 +240,13 @@ export function SettingsPage() {
         <p className="text-[11px] text-muted-foreground-2">
           Any esplora-compatible endpoint works. Empty resets to the network default.
         </p>
+      </Section>
+
+      <Section icon={Zap} title="Breez wallet" desc="The Breez API key is configured through the VITE_BREEZ_API_KEY environment variable in .env.">
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Check size={14} className="text-primary" />
+          API key loaded from the app environment — no in-app setup required.
+        </div>
       </Section>
 
       <Section icon={Shield} title="Multisig vault" desc="Threshold and signers for treasury custody.">
@@ -300,6 +351,15 @@ export function SettingsPage() {
             </div>
           )}
         </div>
+      </Section>
+
+      <Section icon={LogOut} title="Session" desc="Leave this device. Your passkey stays available for the next sign-in.">
+        <button
+          onClick={handleSignOut}
+          className="h-10 w-full rounded-md border border-destructive/40 text-sm font-medium text-destructive transition hover:bg-destructive/10"
+        >
+          Sign out
+        </button>
       </Section>
     </div>
   );

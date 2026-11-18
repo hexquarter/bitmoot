@@ -6,11 +6,13 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:pages": "yarn build && node scripts/generate-404.mjs",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "preview:pages": "yarn build:pages && vite preview"
   },
   "dependencies": {
-    "@buildonspark/spark-sdk": "^0.15.0",
+    "@breeztech/breez-sdk-spark": "^0.28.4",
     "@noble/curves": "^1.9.7",
     "@noble/hashes": "^2.4.0",
     "@radix-ui/react-slot": "^1.2.4",

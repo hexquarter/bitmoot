@@ -1,6 +1,13 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Fingerprint, KeyRound, Puzzle, ShieldCheck, ArrowRight } from "lucide-react";
+import {
+  ArrowRight,
+  ChevronDown,
+  Fingerprint,
+  KeyRound,
+  Puzzle,
+  ShieldCheck,
+} from "lucide-react";
 import { toast } from "sonner";
 import {
   registerPasskey,
@@ -9,26 +16,31 @@ import {
   signInWithNip07,
   signInWithMnemonic,
   hasStoredPasskey,
-  lastMethod,
+  useAuth,
 } from "../lib/auth";
+import { Button, Card, Field, Input, inputClass } from "../components/ui";
 
-/**
- * Auth gateway: passkey (WebAuthn PRF → NIP-06 key), nsec, NIP-07 extension,
- * or restoring a seed backup.
- */
+/** Passkey-first sign in. Nostr keys and seed words live under Advanced. */
 export function AuthPage() {
   const navigate = useNavigate();
+  const signer = useAuth().signer;
   const [busy, setBusy] = useState<string | null>(null);
+  const [advanced, setAdvanced] = useState(false);
   const [nsec, setNsec] = useState("");
   const [mnemonic, setMnemonic] = useState("");
   const [showRestore, setShowRestore] = useState(false);
   const hasPasskey = hasStoredPasskey();
 
+  // The app gate restores the session before routing; send restored users on.
+  useEffect(() => {
+    if (signer) navigate("/app", { replace: true });
+  }, [signer, navigate]);
+
   const run = async (label: string, fn: () => Promise<unknown>) => {
     setBusy(label);
     try {
       await fn();
-      navigate("/app");
+      navigate("/app", { replace: true });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
@@ -37,120 +49,152 @@ export function AuthPage() {
   };
 
   return (
-    <div className="min-h-screen bg-background text-foreground flex flex-col">
-      <header className="border-b border-border px-6 h-16 flex items-center justify-between">
+    <div className="flex min-h-screen flex-col bg-background text-foreground">
+      <header className="flex h-16 items-center justify-between border-b border-border px-6">
         <Link to="/" className="font-mono font-semibold tracking-[0.14em] text-[15px]">
           BIT<span className="font-light">MOOT</span><b className="text-primary">.</b>
         </Link>
-        <span className="text-[10px] font-mono uppercase tracking-widest text-muted-foreground-2">
-          Sovereign auth · no servers
+        <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground-2">
+          Simple. Private. Yours.
         </span>
       </header>
 
-      <main className="flex-1 flex items-center justify-center px-4 py-12">
+      <main className="flex flex-1 items-center justify-center px-4 py-12">
         <div className="w-full max-w-md space-y-6">
           <div className="text-center">
-            <div className="inline-flex h-12 w-12 items-center justify-center rounded-md bg-primary-dim border border-primary/30 mb-4">
+            <div className="mx-auto mb-4 inline-flex h-12 w-12 items-center justify-center rounded-md border border-primary/30 bg-primary-dim">
               <ShieldCheck className="h-6 w-6 text-primary" />
             </div>
-            <h1 className="text-3xl font-serif italic">Sign in to BitMoot</h1>
+            <h1 className="text-3xl font-serif italic">Welcome to BitMoot</h1>
             <p className="mt-2 text-sm text-muted-foreground">
-              Your key is your identity. Nothing leaves this device except signed Nostr events.
+              Manage your group's money and decisions. No password, no account to create.
             </p>
           </div>
 
-          <div className="rounded-lg border border-border bg-bg-elev-1 p-5 space-y-4">
-            <button
+          <Card className="space-y-3 p-5">
+            <Button
+              variant="primary"
+              className="h-12 w-full"
               disabled={busy !== null}
-              onClick={() => run("passkey-create", () => registerPasskey("BitMoot member"))}
-              className="w-full h-11 rounded-md bg-primary text-primary-foreground font-medium text-sm flex items-center justify-center gap-2 hover:opacity-90 transition disabled:opacity-50"
+              onClick={() => run("existing", unlockPasskey)}
             >
-              <Fingerprint className="h-4 w-4" />
-              {busy === "passkey-create" ? "Creating passkey…" : "Create a passkey"}
-            </button>
-            {hasPasskey && (
-              <button
-                disabled={busy !== null}
-                onClick={() => run("passkey-unlock", unlockPasskey)}
-                className="w-full h-11 rounded-md border border-primary/40 text-primary text-sm flex items-center justify-center gap-2 hover:bg-primary-dim transition disabled:opacity-50"
-              >
-                <Fingerprint className="h-4 w-4" />
-                {busy === "passkey-unlock" ? "Unlocking…" : "Continue with passkey"}
-              </button>
-            )}
-            <p className="text-[11px] text-muted-foreground-2 font-mono leading-relaxed">
-              PASSKEY → PRF EXTENSION → DETERMINISTIC SEED → NIP-06 NOSTR KEY (m/44'/1237'/0'/0/0)
+              <Fingerprint className="h-5 w-5" />
+              {busy === "existing"
+                ? "Checking…"
+                : hasPasskey
+                  ? "Continue with passkey"
+                  : "Sign in with an existing passkey"}
+            </Button>
+            <p className="text-center text-[11px] leading-relaxed text-muted-foreground-2">
+              {hasPasskey
+                ? "Use your face, fingerprint or device PIN."
+                : "Use a passkey you already created, including one synced from another device."}
             </p>
-          </div>
 
-          <div className="rounded-lg border border-border bg-bg-elev-1 p-5 space-y-3">
-            <div className="flex items-center gap-2 text-sm font-medium">
-              <KeyRound className="h-4 w-4 text-primary" /> Sign in with nsec
+            <div className="flex items-center gap-3 py-1">
+              <div className="h-px flex-1 bg-border" />
+              <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground-2">or</span>
+              <div className="h-px flex-1 bg-border" />
             </div>
-            <input
-              type="password"
-              value={nsec}
-              onChange={(e) => setNsec(e.target.value)}
-              placeholder="nsec1…"
-              className="w-full h-10 rounded-md border border-border bg-bg-elev-2 px-3 text-sm font-mono focus:outline-none focus:border-primary/60"
-            />
-            <button
-              disabled={busy !== null || !nsec.trim()}
-              onClick={() => run("nsec", () => signInWithNsec(nsec))}
-              className="w-full h-10 rounded-md border border-border text-sm hover:border-primary/50 hover:text-primary transition disabled:opacity-50"
-            >
-              {busy === "nsec" ? "Signing in…" : "Use secret key"}
-            </button>
-          </div>
 
-          <div className="rounded-lg border border-border bg-bg-elev-1 p-5 space-y-3">
-            <div className="flex items-center gap-2 text-sm font-medium">
-              <Puzzle className="h-4 w-4 text-primary" /> Browser extension (NIP-07)
-            </div>
-            <p className="text-[11px] text-muted-foreground">
-              Alby, nos2x or any NIP-07 extension. The key never touches this page.
-            </p>
-            <button
+            <Button
+              variant="secondary"
+              className="w-full"
               disabled={busy !== null}
-              onClick={() => run("nip07", signInWithNip07)}
-              className="w-full h-10 rounded-md border border-border text-sm hover:border-primary/50 hover:text-primary transition disabled:opacity-50"
+              onClick={() => run("create", () => registerPasskey("BitMoot member"))}
             >
-              {busy === "nip07" ? "Connecting…" : "Connect extension"}
+              <ShieldCheck className="h-4 w-4" />
+              {busy === "create" ? "Creating your passkey…" : "Create a new passkey"}
+            </Button>
+            <p className="text-center text-[11px] leading-relaxed text-muted-foreground-2">
+              Face ID, Touch ID or Windows Hello. Your key never leaves this device.
+            </p>
+          </Card>
+
+          <div className="text-center">
+            <button
+              type="button"
+              onClick={() => setAdvanced((value) => !value)}
+              className="inline-flex items-center gap-1 text-xs text-muted-foreground transition hover:text-primary"
+            >
+              Already have a Nostr key? Advanced sign-in
+              <ChevronDown className={"h-3.5 w-3.5 transition " + (advanced ? "rotate-180" : "")} />
             </button>
           </div>
 
-          {showRestore ? (
-            <div className="rounded-lg border border-border bg-bg-elev-1 p-5 space-y-3">
-              <div className="text-sm font-medium">Restore from seed words</div>
-              <textarea
-                value={mnemonic}
-                onChange={(e) => setMnemonic(e.target.value)}
-                rows={3}
-                placeholder="12 or 24 BIP-39 words backing up your passkey or org identity…"
-                className="w-full rounded-md border border-border bg-bg-elev-2 px-3 py-2 text-sm font-mono focus:outline-none focus:border-primary/60 resize-none"
-              />
-              <button
-                disabled={busy !== null || !mnemonic.trim()}
-                onClick={() => run("mnemonic", () => signInWithMnemonic(mnemonic))}
-                className="w-full h-10 rounded-md border border-border text-sm hover:border-primary/50 hover:text-primary transition disabled:opacity-50"
-              >
-                {busy === "mnemonic" ? "Restoring…" : "Restore key"}
-              </button>
+          {advanced && (
+            <div className="space-y-4">
+              <Card className="space-y-3 p-5">
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  <Puzzle className="h-4 w-4 text-primary" /> Nostr extension
+                </div>
+                <p className="text-[11px] text-muted-foreground">
+                  Connect Alby or another NIP-07 extension. The key stays in the extension.
+                </p>
+                <Button
+                  className="w-full"
+                  disabled={busy !== null}
+                  onClick={() => run("nip07", signInWithNip07)}
+                >
+                  {busy === "nip07" ? "Connecting…" : "Connect extension"}
+                </Button>
+              </Card>
+
+              <Card className="space-y-3 p-5">
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  <KeyRound className="h-4 w-4 text-primary" /> Secret key (nsec)
+                </div>
+                <Input
+                  type="password"
+                  value={nsec}
+                  onChange={(e) => setNsec(e.target.value)}
+                  placeholder="nsec1…"
+                  className="font-mono"
+                />
+                <Button
+                  className="w-full"
+                  disabled={busy !== null || !nsec.trim()}
+                  onClick={() => run("nsec", () => signInWithNsec(nsec))}
+                >
+                  {busy === "nsec" ? "Signing in…" : "Use secret key"}
+                </Button>
+              </Card>
+
+              {showRestore ? (
+                <Card className="space-y-3 p-5">
+                  <Field label="Seed words">
+                    <textarea
+                      value={mnemonic}
+                      onChange={(e) => setMnemonic(e.target.value)}
+                      rows={3}
+                      placeholder="12 or 24 words from your backup"
+                      className={inputClass + " h-auto resize-none py-2 font-mono"}
+                    />
+                  </Field>
+                  <Button
+                    className="w-full"
+                    disabled={busy !== null || !mnemonic.trim()}
+                    onClick={() => run("mnemonic", () => signInWithMnemonic(mnemonic))}
+                  >
+                    {busy === "mnemonic" ? "Restoring…" : "Restore key"}
+                  </Button>
+                </Card>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setShowRestore(true)}
+                  className="mx-auto flex items-center gap-1 text-xs text-muted-foreground transition hover:text-primary"
+                >
+                  Restore from seed words <ArrowRight className="h-3 w-3" />
+                </button>
+              )}
             </div>
-          ) : (
-            <button
-              onClick={() => setShowRestore(true)}
-              className="w-full text-xs text-muted-foreground hover:text-primary transition flex items-center justify-center gap-1"
-            >
-              Lost access? Restore from seed backup <ArrowRight className="h-3 w-3" />
-            </button>
           )}
         </div>
       </main>
 
-      <footer className="border-t border-border px-6 py-3 flex items-center justify-between text-[10px] font-mono uppercase tracking-widest text-muted-foreground-2">
-        <span>BLOCKMOOT EXPERIMENTAL · USE SMALL AMOUNTS</span>
-        {lastMethod() && <span>LAST SIGN-IN: {lastMethod().toUpperCase()}</span>}
+      <footer className="border-t border-border px-6 py-3 text-center font-mono text-[10px] uppercase tracking-widest text-muted-foreground-2">
+        No servers. No passwords. Keys stay on this device.
       </footer>
     </div>
   );

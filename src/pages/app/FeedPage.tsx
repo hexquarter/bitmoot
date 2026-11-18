@@ -4,18 +4,22 @@ import { Radio, Send, Globe2, Lock, MessageSquare, Hash } from "lucide-react";
 import { useAuth } from "../../lib/auth";
 import { publishFeedPost, shortNpub, useOrg } from "../../lib/org";
 import { useSettings } from "../../lib/settings";
+import { profileLabel, profileSubtitle, useProfiles } from "../../lib/profile";
+import { Avatar } from "../../components/ui";
+import { OrgWalletNote } from "../../components/OrgWalletNote";
 
 const charLimit = 500;
 
 export function FeedPage() {
   const org = useOrg();
+  const canManage = org.myRole === "admin";
   const auth = useAuth().signer;
   const settings = useSettings();
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
 
   const publish = async () => {
-    if (!draft.trim()) return;
+    if (!canManage || !draft.trim()) return;
     setBusy(true);
     try {
       await publishFeedPost(draft.trim());
@@ -29,6 +33,10 @@ export function FeedPage() {
   };
 
   const relayCount = settings.relays.length;
+  const profiles = useProfiles([
+    ...(auth ? [auth.pubkey] : []),
+    ...org.feed.map((post) => post.author),
+  ]);
 
   return (
     <div className="space-y-6 max-w-7xl">
@@ -47,9 +55,12 @@ export function FeedPage() {
         </div>
       </div>
 
+      <OrgWalletNote org={org} compact />
+
       <div className="grid lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-6">
-          {/* Composer */}
+          {/* Composer — admins only */}
+          {canManage && (
           <div className="rounded-lg border border-border bg-bg-elev-1/50 overflow-hidden">
             <div className="flex items-center justify-between px-5 py-3 border-b border-border bg-bg-elev-2/40">
               <div className="flex items-center gap-2">
@@ -62,12 +73,15 @@ export function FeedPage() {
             </div>
             <div className="p-5 space-y-4">
               <div className="flex gap-3">
-                <div className="h-9 w-9 shrink-0 rounded-full bg-gradient-to-br from-primary to-[oklch(0.82_0.17_70)] flex items-center justify-center text-[11px] font-bold text-primary-foreground">
-                  {auth ? shortNpub(auth.npub).slice(0, 2).toUpperCase() : "?"}
-                </div>
+                <Avatar
+                  name={auth ? profileLabel(auth.pubkey, profiles[auth.pubkey]) : "?"}
+                  src={auth ? profiles[auth.pubkey]?.picture : undefined}
+                />
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 text-xs">
-                    <span className="font-medium font-mono">{auth ? shortNpub(auth.npub) : "signed out"}</span>
+                    <span className="font-medium">
+                      {auth ? profileLabel(auth.pubkey, profiles[auth.pubkey]) : "signed out"}
+                    </span>
                   </div>
                   <textarea
                     value={draft}
@@ -104,6 +118,13 @@ export function FeedPage() {
               </div>
             </div>
           </div>
+          )}
+
+          {!canManage && (
+            <div className="rounded-lg border border-border bg-bg-elev-1/50 px-5 py-4 text-sm text-muted-foreground">
+              Read-only feed. Only administrators publish org updates; members can propose and vote on decisions.
+            </div>
+          )}
 
           {/* Posts */}
           <div className="space-y-3">
@@ -111,7 +132,9 @@ export function FeedPage() {
               <div className="rounded-lg border border-border bg-bg-elev-1/50 px-5 py-6 text-sm text-muted-foreground">
                 {org.loading
                   ? "Loading feed from relays…"
-                  : "No posts yet. Broadcast the first org update above."}
+                  : canManage
+                    ? "No posts yet. Broadcast the first org update above."
+                    : "No posts yet."}
               </div>
             )}
             {org.feed.map((p) => (
@@ -120,12 +143,21 @@ export function FeedPage() {
                 className="rounded-lg border border-border bg-bg-elev-1/50 hover:border-border-bright transition overflow-hidden"
               >
                 <div className="flex items-start gap-3 p-5">
-                  <div className="h-9 w-9 shrink-0 rounded-full bg-gradient-to-br from-primary to-[oklch(0.82_0.17_70)] flex items-center justify-center text-[10px] font-bold text-primary-foreground">
-                    {shortNpub(p.author).slice(0, 2).toUpperCase()}
-                  </div>
+                  <Avatar
+                    name={profileLabel(p.author, profiles[p.author])}
+                    src={profiles[p.author]?.picture}
+                  />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 text-xs flex-wrap">
-                      <span className="font-medium font-mono">{shortNpub(p.author)}</span>
+                      <span className="font-medium">{profileLabel(p.author, profiles[p.author])}</span>
+                      {profileSubtitle(profiles[p.author]) && (
+                        <>
+                          <span className="text-muted-foreground-2">·</span>
+                          <span className="text-[11px] text-muted-foreground">
+                            {profileSubtitle(profiles[p.author])}
+                          </span>
+                        </>
+                      )}
                       <span className="text-muted-foreground-2">·</span>
                       <span className="text-muted-foreground">{new Date(p.createdAt * 1000).toLocaleString()}</span>
                       <span

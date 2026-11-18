@@ -7,10 +7,10 @@ import {
 import { useOrg, unlockTreasury, treasurySeed } from "../../lib/org";
 import {
   connectOrgWallet, getOrgBalances, getOrgStaticDepositAddress, getOrgTransfers,
-  getOrgSparkAddress, formatUsdb, type OrgBalances,
+  getOrgSparkAddress, formatUsdb, type OrgBalances, type OrgTransfer,
 } from "../../lib/spark";
 import { fetchAddressBalance, fetchUtxos, explorerUiBase } from "../../lib/vault";
-import type { WalletTransfer } from "@buildonspark/spark-sdk/types";
+import { OrgWalletNote } from "../../components/OrgWalletNote";
 
 function fmtSats(n: bigint): string {
   return Number(n).toLocaleString("en-US");
@@ -23,16 +23,17 @@ function copy(text: string) {
 
 export function TreasuryPage() {
   const org = useOrg();
+  const canManage = org.myRole === "admin";
   const [balances, setBalances] = useState<OrgBalances | null>(null);
   const [depositAddress, setDepositAddress] = useState<string | null>(null);
   const [sparkAddress, setSparkAddress] = useState<string | null>(null);
-  const [transfers, setTransfers] = useState<WalletTransfer[]>([]);
+  const [transfers, setTransfers] = useState<OrgTransfer[]>([]);
   const [vaultBalance, setVaultBalance] = useState<bigint | null>(null);
   const [utxoCount, setUtxoCount] = useState(0);
   const [busy, setBusy] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
-    if (!treasurySeed()) return;
+    if (!canManage || !treasurySeed()) return;
     setBusy("refresh");
     try {
       const wallet = await connectOrgWallet(treasurySeed()!);
@@ -51,7 +52,7 @@ export function TreasuryPage() {
     } finally {
       setBusy(null);
     }
-  }, []);
+  }, [canManage]);
 
   useEffect(() => {
     // Deferred to a microtask: state updates land outside the effect commit.
@@ -70,6 +71,7 @@ export function TreasuryPage() {
   }, [vaultAddress]);
 
   const unlock = async () => {
+    if (!canManage) return;
     setBusy("unlock");
     try {
       await unlockTreasury();
@@ -92,26 +94,44 @@ export function TreasuryPage() {
             Self-custodial Spark wallet + {org.config?.threshold ?? "M"}-of-{org.config?.vaultSigners.length ?? "N"} taproot vault.
           </p>
         </div>
-        {org.seedUnlocked ? (
-          <button
-            onClick={refresh}
-            disabled={busy === "refresh"}
-            className="h-10 px-4 rounded-md border border-border bg-bg-elev-2/50 text-sm flex items-center gap-2 hover:border-border-bright transition"
-          >
-            <RefreshCw className={"h-4 w-4 " + (busy === "refresh" ? "animate-spin" : "")} /> Refresh
-          </button>
+        {canManage ? (
+          org.seedUnlocked ? (
+            <button
+              onClick={refresh}
+              disabled={busy === "refresh"}
+              className="h-10 px-4 rounded-md border border-border bg-bg-elev-2/50 text-sm flex items-center gap-2 hover:border-border-bright transition"
+            >
+              <RefreshCw className={"h-4 w-4 " + (busy === "refresh" ? "animate-spin" : "")} /> Refresh
+            </button>
+          ) : (
+            <button
+              onClick={unlock}
+              disabled={busy === "unlock"}
+              className="h-10 px-4 rounded-md bg-primary text-primary-foreground font-medium text-sm flex items-center gap-2 hover:opacity-90 transition"
+            >
+              <Unlock className="h-4 w-4" /> {busy === "unlock" ? "Decrypting…" : "Unlock treasury"}
+            </button>
+          )
         ) : (
-          <button
-            onClick={unlock}
-            disabled={busy === "unlock"}
-            className="h-10 px-4 rounded-md bg-primary text-primary-foreground font-medium text-sm flex items-center gap-2 hover:opacity-90 transition"
-          >
-            <Unlock className="h-4 w-4" /> {busy === "unlock" ? "Decrypting…" : "Unlock treasury"}
-          </button>
+          <span className="rounded-md border border-border bg-bg-elev-2/50 px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+            Read only
+          </span>
         )}
       </div>
 
-      {!org.seedUnlocked && (
+      <OrgWalletNote org={org} />
+
+      {!canManage && (
+        <div className="rounded-lg border border-border bg-bg-elev-1/50 p-5 text-sm text-muted-foreground flex items-start gap-3">
+          <Lock className="h-4 w-4 mt-0.5 text-primary shrink-0" />
+          <div>
+            Members see the shared wallet and vault publicly. Only administrators unlock the Breez wallet to view
+            live balances and transfers. To move funds, submit a proposal instead.
+          </div>
+        </div>
+      )}
+
+      {canManage && !org.seedUnlocked && (
         <div className="rounded-lg border border-border bg-bg-elev-1/50 p-5 text-sm text-muted-foreground flex items-start gap-3">
           <Lock className="h-4 w-4 mt-0.5 text-primary shrink-0" />
           <div>
@@ -129,19 +149,27 @@ export function TreasuryPage() {
               <div className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground">Total balance</div>
               <Bitcoin className="h-5 w-5 text-primary" />
             </div>
-            <div className="mt-4 text-5xl font-mono font-semibold tracking-tight">₿ {(Number(total) / 1e8).toFixed(4)}</div>
+            <div className="mt-4 text-5xl font-mono font-semibold tracking-tight">
+              {canManage ? `₿ ${(Number(total) / 1e8).toFixed(4)}` : "—"}
+            </div>
             <div className="text-sm text-muted-foreground mt-1 font-mono">
-              {org.seedUnlocked ? `${fmtSats(balances?.sats ?? 0n)} sats spark${vaultBalance !== null ? ` + ${fmtSats(vaultBalance)} sats vault` : ""}` : "locked"}
+              {!canManage
+                ? "shared org wallet · balance visible to admins"
+                : org.seedUnlocked
+                  ? `${fmtSats(balances?.sats ?? 0n)} sats spark${vaultBalance !== null ? ` + ${fmtSats(vaultBalance)} sats vault` : ""}`
+                  : "locked"}
             </div>
-            <div className="mt-6 flex flex-wrap gap-2">
-              <button onClick={() => document.getElementById("receive-panel")?.scrollIntoView({ behavior: "smooth" })}
-                className="h-10 px-4 rounded-md border border-border bg-bg-elev-2/50 text-sm flex items-center gap-2 hover:border-border-bright transition">
-                <ArrowDownRight className="h-4 w-4" /> Receive
-              </button>
-              <Link to="/app/payments" className="h-10 px-4 rounded-md border border-border bg-bg-elev-2/50 text-sm flex items-center gap-2 hover:border-border-bright transition">
-                <Zap className="h-4 w-4 text-[var(--yellow)]" /> Pay
-              </Link>
-            </div>
+            {canManage && (
+              <div className="mt-6 flex flex-wrap gap-2">
+                <button onClick={() => document.getElementById("receive-panel")?.scrollIntoView({ behavior: "smooth" })}
+                  className="h-10 px-4 rounded-md border border-border bg-bg-elev-2/50 text-sm flex items-center gap-2 hover:border-border-bright transition">
+                  <ArrowDownRight className="h-4 w-4" /> Receive
+                </button>
+                <Link to="/app/payments" className="h-10 px-4 rounded-md border border-border bg-bg-elev-2/50 text-sm flex items-center gap-2 hover:border-border-bright transition">
+                  <Zap className="h-4 w-4 text-[var(--yellow)]" /> Pay
+                </Link>
+              </div>
+            )}
           </div>
         </div>
 
@@ -159,7 +187,14 @@ export function TreasuryPage() {
             <div className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground mb-1.5">Address</div>
             <div className="flex items-center gap-2">
               <code className="font-mono text-[11px] truncate flex-1">{org.vault?.address ?? "vault incomplete"}</code>
-              {org.vault && <button onClick={() => copy(org.vault!.address)} className="text-muted-foreground hover:text-primary transition"><Copy className="h-3.5 w-3.5" /></button>}
+              {org.vault && (
+                <button
+                  onClick={() => copy(org.vault!.address)}
+                  className="flex shrink-0 items-center gap-1 text-[11px] text-primary hover:underline"
+                >
+                  <Copy className="h-3.5 w-3.5" /> Copy address
+                </button>
+              )}
               {org.vault && <button onClick={() => window.open(explorerUiBase() + "/address/" + org.vault!.address, "_blank")} className="text-muted-foreground hover:text-primary transition"><ExternalLink className="h-3.5 w-3.5" /></button>}
             </div>
           </div>
@@ -211,25 +246,28 @@ export function TreasuryPage() {
         <div className="divide-y divide-border">
           {transfers.length === 0 && (
             <div className="px-5 py-6 text-sm text-muted-foreground">
-              {org.seedUnlocked ? "No transfers yet." : "Unlock the treasury to see transfers."}
+              {!canManage
+                ? "Transfers are visible to administrators."
+                : org.seedUnlocked
+                  ? "No transfers yet."
+                  : "Unlock the treasury to see transfers."}
             </div>
           )}
           {transfers.slice(0, 15).map((t) => {
-            const isOut = t.transferDirection === "OUTGOING";
-            const sats = isOut ? t.valueSentByWallet : t.valueReceivedByWallet;
+            const isOut = t.direction === "OUTGOING";
             return (
               <div key={t.id} className="px-5 py-3.5 flex items-center gap-4 hover:bg-bg-elev-2/40 transition">
                 <div className={"h-8 w-8 rounded-full flex items-center justify-center " + (isOut ? "bg-primary/15 text-primary" : "bg-[var(--green)]/15 text-[var(--green)]")}>
                   {isOut ? <ArrowUpRight className="h-4 w-4" /> : <ArrowDownRight className="h-4 w-4" />}
                 </div>
                 <div className="flex-1 min-w-0">
-                  <div className="text-sm font-medium truncate">{String(t.type).toLowerCase()}</div>
+                  <div className="text-sm font-medium truncate">{t.type}</div>
                   <div className="text-[11px] text-muted-foreground font-mono">
-                    {String(t.status)} · {t.createdTime ? new Date(t.createdTime).toLocaleString() : ""}
+                    {t.status} · {t.createdAt ? new Date(t.createdAt * 1000).toLocaleString() : ""}
                   </div>
                 </div>
                 <div className="text-right">
-                  <div className="text-sm font-mono font-medium">{sats > 0 ? `${fmtSats(BigInt(sats))} sats` : "—"}</div>
+                  <div className="text-sm font-mono font-medium">{t.amount > 0n ? `${fmtSats(t.amount)} sats` : "—"}</div>
                 </div>
               </div>
             );

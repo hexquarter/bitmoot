@@ -13,13 +13,13 @@ const useCases = [
 ];
 
 const productPreviews = [
-  ["01", "GOVERN", "Proposals & votes that just work", "Draft a proposal, attach a budget, and let the members sign the decision from Nostr.", "KIND 30052 · 8 / 12 VOTES · QUORUM 67%", ProposalImg, "NOSTR GOVERNANCE"],
+  ["01", "GOVERN", "Proposals & votes that just work", "Draft a proposal, attach a budget, and let members vote privately. Every proposal and vote is end-to-end encrypted to the organization's members.", "NIP-44 E2E · KIND 30052 · 8 / 12 VOTES", ProposalImg, "NOSTR GOVERNANCE"],
   ["02", "CUSTODY", "A multisig your bank wishes it had", "Funds live in a Taproot multisig you control. M-of-N co-signers. Timelock recovery.", "TAPROOT VAULT · 3-OF-5 · 14 UTXOS", TreasuryImg, "BITCOIN TREASURY"],
   ["03", "PAY", "Payments in seconds", "Pay contributors in USDB by the second, send grants over Lightning, or settle on-chain.", "LIGHTNING · 120,000 SATS · SETTLED", PaymentImg, "PAYMENTS / USDB"],
   ["04", "COMMUNICATE", "Control your audience", "Publish signed updates to your own Nostr audience. Your identity and history stay portable.", "KIND 1 · 4 / 4 RELAYS · SIGNED BY DAO NPUB", FeedImg, "NOSTR FEED"],
 ];
 
-function MarkIcon({ type }: { type: "audit" | "descriptor" | "builder" }) {
+function MarkIcon({ type }: { type: "audit" | "descriptor" | "builder" | "privacy" }) {
   return <span className={`mark-icon mark-icon--${type}`} aria-hidden="true" />;
 }
 
@@ -51,9 +51,9 @@ export function Index() {
         <div className="hero-copy">
           <p className="eyebrow"><i /> BITCOIN-NATIVE DAO INFRASTRUCTURE</p>
           <h1 id="hero-title">Vote on Nostr.<br /><em>Custody</em> on Taproot.<br />Pay over Lightning.</h1>
-          <p className="hero-summary">BitMoot is the operating layer for groups that govern together, hold their own keys, and move money without asking permission.</p>
+          <p className="hero-summary">BitMoot is the operating layer for groups that govern together, hold their own keys, and move money without asking permission. Proposals and votes stay end-to-end encrypted for maximum privacy.</p>
           <div className="hero-actions"><Link className="button-primary" to="/auth">Start a DAO <span>↗</span></Link><a className="quiet-link" href="#proof">View a live DAO <span>→</span></a></div>
-          <div className="trust-strip" aria-label="Trust signals"><a href="#proof"><MarkIcon type="audit" /> AUDIT LOG <span>verified</span></a><a href="#proof"><MarkIcon type="descriptor" /> DESCRIPTOR <span>bc1p…7k4q</span></a><a href="#proof"><MarkIcon type="builder" /> BUILT BY <span>BitMoot core</span></a></div>
+          <div className="trust-strip" aria-label="Trust signals"><a href="#proof"><MarkIcon type="audit" /> AUDIT LOG <span>verified</span></a><a href="#proof"><MarkIcon type="descriptor" /> DESCRIPTOR <span>bc1p…7k4q</span></a><a href="#self-sovereign"><MarkIcon type="privacy" /> E2E ENCRYPTED <span>proposals + votes</span></a><a href="https://hexquarter.com" target="_blank"><MarkIcon type="builder" /> BUILT BY <span>HexQuarter</span></a></div>
         </div>
 
         <div className="live-panel" aria-label="Live DAO demonstration">
@@ -80,7 +80,7 @@ export function Index() {
         <div className="product-pipeline">{productPreviews.map(([number, label, title, copy, meta, image, imageLabel], index) => <article className={`product-preview product-preview--${index + 1}`} key={number}><div className="preview-copy"><span className="preview-number">{number}</span><div><div className="preview-label">{label}</div><h3>{title}</h3><p>{copy}</p><div className="preview-meta">{meta}</div></div></div><div className="preview-frame"><div className="preview-frame-head"><span>{imageLabel}</span><span>BITMOOT / LIVE VIEW</span></div><img src={image} alt={`${title} preview from the BitMoot app`} /></div></article>)}</div>
       </section>
 
-      <section id="self-sovereign" className="sovereignty-section" aria-labelledby="sovereignty-title"><div className="sovereignty-heading"><div className="section-marker">04 / SELF-SOVEREIGNTY</div><h2 id="sovereignty-title">The rules stay visible.</h2><p>Self-custody is not a slogan in the interface. It is a set of inspectable choices.</p></div><div className="sovereignty-list"><article><b>01</b><div><h3>You hold the keys.</h3><p>Funds live in a multisig you control. We cannot pause, freeze, or rug you. Timelock recovery covers the missing signer.</p><code>RECOVERY / CSV 30 DAYS</code></div></article><article><b>02</b><div><h3>Stablecoin payroll is optional.</h3><p>Pay contributors in USDB so a bad week in the market does not become their problem. Volatility stays optional.</p><code>USDB / STREAMING / LIGHTNING</code></div></article><article><b>03</b><div><h3>Identity travels with the member.</h3><p>Members log in once and carry their reputation across Nostr-native apps. Your community is never locked in.</p><code>NOSTR NPUB / KIND 1 / PORTABLE</code></div></article></div></section>
+      <section id="self-sovereign" className="sovereignty-section" aria-labelledby="sovereignty-title"><div className="sovereignty-heading"><div className="section-marker">04 / SELF-SOVEREIGNTY</div><h2 id="sovereignty-title">The rules stay visible.</h2><p>Self-custody is not a slogan in the interface. It is a set of inspectable choices.</p></div><div className="sovereignty-list"><article><b>01</b><div><h3>You hold the keys.</h3><p>Funds live in a multisig you control. We cannot pause, freeze, or rug you. Timelock recovery covers the missing signer.</p><code>RECOVERY / CSV 30 DAYS</code></div></article><article><b>02</b><div><h3>Private by design.</h3><p>Proposal details and votes are end-to-end encrypted to the organization's members with NIP-44. Outsiders see signed activity, not your internal decisions.</p><code>NIP-44 / E2E / MEMBER KEYS ONLY</code></div></article><article><b>03</b><div><h3>Stablecoin payroll is optional.</h3><p>Pay contributors in USDB so a bad week in the market does not become their problem. Volatility stays optional.</p><code>USDB / STREAMING / LIGHTNING</code></div></article><article><b>04</b><div><h3>Identity travels with the member.</h3><p>Members log in once and carry their reputation across Nostr-native apps. Your community is never locked in.</p><code>NOSTR NPUB / KIND 1 / PORTABLE</code></div></article></div></section>
 
       <section className="signup-section" id="start" aria-labelledby="signup-title"><div><div className="section-marker">05 / ACCESS</div><h2 id="signup-title">Bring a group.<br /><em>Keep the keys.</em></h2></div><form onSubmit={handleSubmit}><label htmlFor="email">EMAIL ADDRESS</label><div><input id="email" name="email" type="email" required value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@yourcollective.org" /><button type="submit">REQUEST ACCESS <span>↗</span></button></div><p>Your address is used for access updates only. No newsletter machinery.</p>{status && <output>{status}</output>}</form></section>
       <footer className="site-footer"><span>BITMOOT / 2026</span><span>PROOF, NOT PROMISES.</span><span>21M FOREVER.</span></footer>

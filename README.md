@@ -41,6 +41,25 @@ Council (co-signers):
 
 Governance elects council.
 
+## GitHub Pages deployment
+
+`.github/workflows/deploy.yml` builds and deploys the app on every push to `master` (and on manual dispatch).
+
+1. In **Settings → Pages**, set **Build and deployment → Source** to **GitHub Actions**.
+2. Add repository secrets:
+   - `VITE_BREEZ_API_KEY`
+   - `VITE_PLATFORM_FEE_ADDRESS` (leave unset to disable the platform fee)
+3. Push to `master`.
+
+The Vite base path is derived from `GITHUB_REPOSITORY`, so project pages resolve at `https://<owner>.github.io/<repo>/`. `dist/404.html` is generated at build time to preserve deep links such as `/app/proposals` on GitHub Pages.
+
+For a local production check with the same base path:
+
+```sh
+BASE_PATH=/bitmoot/ yarn build:pages
+BASE_PATH=/bitmoot/ yarn preview
+```
+
 ## License
 
 GPL

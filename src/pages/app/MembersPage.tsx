@@ -4,6 +4,9 @@ import { Key, Crown, UserPlus, RefreshCw, Users, Lock, ShieldCheck, Unlock } fro
 import {
   approveMember, publishVaultSigner, shortNpub, syncVaultSigners, treasurySeed, useOrg,
 } from "../../lib/org";
+import { profileLabel, profileSubtitle, useProfiles } from "../../lib/profile";
+import { Avatar } from "../../components/ui";
+import { OrgWalletNote } from "../../components/OrgWalletNote";
 
 function shortXOnly(x: string): string {
   return `${x.slice(0, 8)}…${x.slice(-6)}`;
@@ -11,15 +14,21 @@ function shortXOnly(x: string): string {
 
 export function MembersPage() {
   const org = useOrg();
+  const canManage = org.myRole === "admin";
   const [busy, setBusy] = useState<string | null>(null);
   const seedUnlocked = Boolean(treasurySeed());
 
   const council = org.members.filter((m) => m.isCouncil);
   const others = org.members.filter((m) => !m.isCouncil);
+  const profiles = useProfiles([
+    ...org.members.map((m) => m.pubkey),
+    ...org.joinRequests.map((r) => r.author),
+  ]);
   const threshold = org.config?.threshold ?? 0;
   const vaultSigners = org.config?.vaultSigners ?? [];
 
   const run = async (key: string, label: string, fn: () => Promise<unknown>) => {
+    if (!canManage) return;
     setBusy(key);
     try {
       await fn();
@@ -47,24 +56,38 @@ export function MembersPage() {
             Identified by Nostr keys. Council members vote and co-sign treasury moves.
           </p>
         </div>
-        <div className="flex gap-2 flex-wrap">
-          <button
-            onClick={publish}
-            disabled={busy === "publish"}
-            className="h-10 px-4 rounded-md border border-border bg-bg-elev-2/50 text-sm flex items-center gap-2 hover:border-border-bright transition disabled:opacity-50"
-          >
-            <Key className="h-4 w-4" /> {busy === "publish" ? "Publishing…" : "Publish my signer key"}
-          </button>
-          <button
-            onClick={sync}
-            disabled={busy === "sync" || !seedUnlocked}
-            title={seedUnlocked ? undefined : "Unlock the treasury (org key) to re-publish the config"}
-            className="h-10 px-4 rounded-md border border-border bg-bg-elev-2/50 text-sm flex items-center gap-2 hover:border-border-bright transition disabled:opacity-50"
-          >
-            <RefreshCw className={"h-4 w-4 " + (busy === "sync" ? "animate-spin" : "")} /> Sync vault signers
-          </button>
-        </div>
+        {canManage ? (
+          <div className="flex gap-2 flex-wrap">
+            <button
+              onClick={publish}
+              disabled={busy === "publish"}
+              className="h-10 px-4 rounded-md border border-border bg-bg-elev-2/50 text-sm flex items-center gap-2 hover:border-border-bright transition disabled:opacity-50"
+            >
+              <Key className="h-4 w-4" /> {busy === "publish" ? "Publishing…" : "Publish my signer key"}
+            </button>
+            <button
+              onClick={sync}
+              disabled={busy === "sync" || !seedUnlocked}
+              title={seedUnlocked ? undefined : "Unlock the treasury (org key) to re-publish the config"}
+              className="h-10 px-4 rounded-md border border-border bg-bg-elev-2/50 text-sm flex items-center gap-2 hover:border-border-bright transition disabled:opacity-50"
+            >
+              <RefreshCw className={"h-4 w-4 " + (busy === "sync" ? "animate-spin" : "")} /> Sync vault signers
+            </button>
+          </div>
+        ) : (
+          <span className="rounded-md border border-border bg-bg-elev-2/50 px-3 py-2 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+            Read only
+          </span>
+        )}
       </div>
+
+      <OrgWalletNote org={org} compact />
+      {!canManage && (
+        <div className="rounded-md border border-border bg-bg-elev-1/50 px-4 py-3 text-sm text-muted-foreground">
+          Members can see who belongs to the org and which keys sign its shared vault. Only administrators approve
+          join requests or change signer keys.
+        </div>
+      )}
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[
@@ -98,12 +121,13 @@ export function MembersPage() {
             return (
               <div key={m.pubkey} className="px-5 py-3.5 grid grid-cols-1 md:grid-cols-12 gap-3 items-center hover:bg-bg-elev-2/40 transition">
                 <div className="md:col-span-4 flex items-center gap-3 min-w-0">
-                  <div className="h-9 w-9 shrink-0 rounded-full bg-gradient-to-br from-primary to-[oklch(0.82_0.17_70)] flex items-center justify-center text-[10px] font-bold text-primary-foreground">
-                    {shortNpub(m.npub).replace("…", "").slice(0, 2).toUpperCase()}
-                  </div>
+                  <Avatar
+                    name={profileLabel(m.pubkey, profiles[m.pubkey])}
+                    src={profiles[m.pubkey]?.picture}
+                  />
                   <div className="min-w-0">
                     <div className="text-sm font-medium truncate flex items-center gap-1.5">
-                      {shortNpub(m.npub)}
+                      {profileLabel(m.pubkey, profiles[m.pubkey])}
                       {m.isCouncil && council.length > 0 && m.pubkey === council[0].pubkey && (
                         <span title="First council member (org creator)" className="flex">
                           <Crown className="h-3 w-3 text-[var(--yellow)]" />
@@ -111,6 +135,11 @@ export function MembersPage() {
                       )}
                     </div>
                     <div className="text-[11px] text-muted-foreground font-mono">{m.npub.slice(0, 20)}…</div>
+                    {profileSubtitle(profiles[m.pubkey]) && (
+                      <div className="mt-0.5 truncate text-[10px] text-muted-foreground-2">
+                        {profileSubtitle(profiles[m.pubkey])}
+                      </div>
+                    )}
                   </div>
                 </div>
                 <div className="md:col-span-4 font-mono text-[11px] text-muted-foreground truncate">
@@ -144,7 +173,7 @@ export function MembersPage() {
               kind 9703
             </span>
           </div>
-          {!seedUnlocked && (
+          {canManage && !seedUnlocked && (
             <span className="text-[11px] font-mono text-[var(--yellow)] flex items-center gap-1.5">
               <Lock className="h-3 w-3" /> unlock treasury to approve
             </span>
@@ -157,7 +186,10 @@ export function MembersPage() {
           {org.joinRequests.map((r) => (
             <div key={r.author + r.createdAt} className="px-5 py-3.5 flex items-center gap-4 hover:bg-bg-elev-2/40 transition">
               <div className="flex-1 min-w-0">
-                <div className="text-sm font-medium font-mono">{shortNpub(r.author)}</div>
+                <div className="text-sm font-medium">
+                  {profileLabel(r.author, profiles[r.author])}
+                  <span className="ml-2 font-mono text-[11px] text-muted-foreground-2">{shortNpub(r.author)}</span>
+                </div>
                 <div className="text-xs text-muted-foreground truncate">
                   {r.note || "(no note)"} · {new Date(r.createdAt * 1000).toLocaleDateString()}
                 </div>
@@ -165,23 +197,29 @@ export function MembersPage() {
                   vault key: {r.vaultXOnly ? shortXOnly(r.vaultXOnly) : "not published"}
                 </div>
               </div>
-              <button
-                onClick={() => approve(r.author)}
-                disabled={busy === `approve:${r.author}` || !seedUnlocked}
-                className="h-9 px-3 shrink-0 rounded-md bg-primary text-primary-foreground text-xs font-medium flex items-center gap-1.5 hover:opacity-90 transition disabled:opacity-50"
-              >
-                {busy === `approve:${r.author}` ? (
-                  "Approving…"
-                ) : seedUnlocked ? (
-                  <>
-                    <Unlock className="h-3.5 w-3.5" /> Approve
-                  </>
-                ) : (
-                  <>
-                    <Lock className="h-3.5 w-3.5" /> Locked
-                  </>
-                )}
-              </button>
+              {canManage ? (
+                <button
+                  onClick={() => approve(r.author)}
+                  disabled={busy === `approve:${r.author}` || !seedUnlocked}
+                  className="h-9 px-3 shrink-0 rounded-md bg-primary text-primary-foreground text-xs font-medium flex items-center gap-1.5 hover:opacity-90 transition disabled:opacity-50"
+                >
+                  {busy === `approve:${r.author}` ? (
+                    "Approving…"
+                  ) : seedUnlocked ? (
+                    <>
+                      <Unlock className="h-3.5 w-3.5" /> Approve
+                    </>
+                  ) : (
+                    <>
+                      <Lock className="h-3.5 w-3.5" /> Locked
+                    </>
+                  )}
+                </button>
+              ) : (
+                <span className="shrink-0 font-mono text-[10px] uppercase tracking-wider text-muted-foreground-2">
+                  awaiting admin
+                </span>
+              )}
             </div>
           ))}
         </div>

@@ -15,6 +15,8 @@ export interface Settings {
   activeOrgNpub?: string;
   /** Optional esplora-compatible API base for on-chain vault ops. */
   explorerApiBase?: string;
+  /** Show raw Nostr events, signatures, and PSBT data in governance views. */
+  advancedMode?: boolean;
 }
 
 const KEY = "bitmoot.settings.v1";
@@ -44,6 +46,7 @@ function load(): Settings {
       activeOrgNpub: typeof parsed.activeOrgNpub === "string" ? parsed.activeOrgNpub : undefined,
       explorerApiBase:
         typeof parsed.explorerApiBase === "string" ? parsed.explorerApiBase : undefined,
+      advancedMode: parsed.advancedMode === true,
     };
     return settings;
   } catch {

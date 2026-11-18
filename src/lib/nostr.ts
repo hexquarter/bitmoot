@@ -16,6 +16,8 @@ import { getSettings } from "./settings";
  *  - 9703  JoinRequest — ask to join an org
  */
 export const Kind = {
+  /** NIP-01 user profile metadata. */
+  Profile: 0,
   OrgConfig: 30078,
   WalletShare: 30079,
   VaultSigner: 30080,

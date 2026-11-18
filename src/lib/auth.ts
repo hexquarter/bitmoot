@@ -6,14 +6,17 @@ import * as nip44 from "nostr-tools/nip44";
 import { entropyToMnemonic, validateMnemonic } from "@scure/bip39";
 import { wordlist } from "@scure/bip39/wordlists/english.js";
 import type { EventTemplate, VerifiedEvent } from "nostr-tools";
+import { hexToBytes, toHex } from "./keys";
 
 /**
  * Authentication: passkeys (WebAuthn PRF), nsec, or a NIP-07 extension.
  *
  * The signer unifies all three methods behind one interface so the rest of the
- * app never cares where the key lives. Secret keys are kept in memory only and
- * never persisted; passkeys re-derive their key via the PRF extension on every
- * unlock, so nothing secret needs to hit localStorage.
+ * app never cares where the key lives. Passkeys still use WebAuthn PRF on the
+ * deliberate "Continue with passkey" tap; the derived key is then cached in
+ * localStorage so reloads resume without a browser prompt. NIP-07 keeps the
+ * key in the extension. Nsec/mnemonic keys are cached the same way. Explicit
+ * sign-out clears the cached key immediately.
  */
 
 export type AuthMethod = "passkey" | "nsec" | "nip07";
@@ -36,13 +39,22 @@ export interface AuthState {
 }
 
 const STORAGE_KEY = "bitmoot.auth.v1";
+/** Resumable local session. Cleared on explicit sign-out. */
+const SESSION_KEY = "bitmoot.session.v1";
 /** Fixed PRF salt — never change it, it would brick existing orgs/npubs. */
 const PRF_SALT = Uint8Array.from(new TextEncoder().encode("bitmoot.org/passkey/v1"));
 
 interface PersistedAuth {
   method?: AuthMethod;
   displayName?: string;
+  /** Public identity, used only to show the right "welcome back" state. */
+  pubkey?: string;
   credentialId?: string; // base64url rawId of the passkey
+}
+
+interface StoredLocalSession {
+  secretKeyHex: string;
+  mnemonic?: string;
 }
 
 function loadPersisted(): PersistedAuth {
@@ -56,6 +68,57 @@ function loadPersisted(): PersistedAuth {
 function persist(patch: PersistedAuth) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...loadPersisted(), ...patch }));
+  } catch {
+    /* ignore */
+  }
+}
+
+function saveLocalSession(secretKey: Uint8Array, mnemonic?: string) {
+  try {
+    const value = JSON.stringify({
+      secretKeyHex: toHex(secretKey),
+      mnemonic,
+    } satisfies StoredLocalSession);
+    localStorage.setItem(SESSION_KEY, value);
+    // Migrate/clean up the old tab-scoped copy if one exists.
+    sessionStorage.removeItem(SESSION_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+function parseLocalSession(raw: string | null): StoredLocalSession | null {
+  try {
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as StoredLocalSession;
+    if (!/^[0-9a-f]{64}$/i.test(parsed.secretKeyHex ?? "")) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function loadLocalSession(): StoredLocalSession | null {
+  try {
+    const stored = parseLocalSession(localStorage.getItem(SESSION_KEY));
+    if (stored) return stored;
+    // One-time migration from the earlier sessionStorage implementation.
+    const legacy = sessionStorage.getItem(SESSION_KEY);
+    const migrated = parseLocalSession(legacy);
+    if (migrated) {
+      localStorage.setItem(SESSION_KEY, legacy!);
+      sessionStorage.removeItem(SESSION_KEY);
+    }
+    return migrated;
+  } catch {
+    return null;
+  }
+}
+
+function clearLocalSession() {
+  try {
+    localStorage.removeItem(SESSION_KEY);
+    sessionStorage.removeItem(SESSION_KEY);
   } catch {
     /* ignore */
   }
@@ -89,17 +152,25 @@ function subscribe(cb: () => void) {
   return () => listeners.delete(cb);
 }
 
+/** Subscribe to sign-in/sign-out changes outside of React. */
+export function subscribeAuth(cb: () => void) {
+  listeners.add(cb);
+  return () => listeners.delete(cb);
+}
+
 function setSigner(signer: NostrSigner | null) {
   state = { signer };
   emit();
 }
 
+/**
+ * Sign out of the current session. The passkey credential pointer is kept so
+ * "Continue with passkey" still works; only the last-method hint is cleared so
+ * NIP-07 no longer auto-restores after an explicit logout.
+ */
 export function signOut() {
-  try {
-    localStorage.removeItem(STORAGE_KEY);
-  } catch {
-    /* ignore */
-  }
+  persist({ method: undefined, displayName: undefined, pubkey: undefined });
+  clearLocalSession();
   setSigner(null);
 }
 
@@ -136,7 +207,8 @@ export async function signInWithNsec(nsec: string): Promise<NostrSigner> {
   }
   if (!key || key.length !== 32) throw new Error("Invalid nsec key");
   const signer = localSigner("nsec", key);
-  persist({ method: "nsec" });
+  persist({ method: "nsec", pubkey: signer.pubkey });
+  saveLocalSession(key);
   setSigner(signer);
   return signer;
 }
@@ -163,7 +235,7 @@ export async function signInWithNip07(): Promise<NostrSigner> {
       return window.nostr.nip44.decrypt(from, payload);
     },
   };
-  persist({ method: "nip07" });
+  persist({ method: "nip07", pubkey });
   setSigner(signer);
   return signer;
 }
@@ -237,6 +309,8 @@ export async function registerPasskey(displayName: string): Promise<NostrSigner>
   if (prfSecret) {
     const { secretKey, mnemonic } = deriveFromPrfSecret(prfSecret);
     const signer = localSigner("passkey", secretKey, mnemonic);
+    persist({ pubkey: signer.pubkey });
+    saveLocalSession(secretKey, mnemonic);
     setSigner(signer);
     return signer;
   }
@@ -264,8 +338,47 @@ export async function unlockPasskey(): Promise<NostrSigner> {
   }
   const { secretKey, mnemonic } = deriveFromPrfSecret(prfSecret);
   const signer = localSigner("passkey", secretKey, mnemonic);
+  // Remember this credential so next time the auth screen can offer
+  // "Continue with passkey" even on a fresh session.
+  persist({
+    method: "passkey",
+    pubkey: signer.pubkey,
+    credentialId: base64urlEncode(new Uint8Array(assertion.rawId)),
+  });
+  saveLocalSession(secretKey, mnemonic);
   setSigner(signer);
   return signer;
+}
+
+/**
+ * Restore a session on page load. Locally derived keys (passkey/nsec/mnemonic)
+ * resume from the cached session. NIP-07 asks its extension silently. Passkeys
+ * deliberately do not trigger WebAuthn here — that needs a user tap, so the
+ * auth screen shows the "Continue with passkey" button instead.
+ */
+export async function restoreSession(): Promise<NostrSigner | null> {
+  if (getAuth().signer) return getAuth().signer;
+  const { method, pubkey } = loadPersisted();
+  try {
+    const stored = loadLocalSession();
+    if (stored) {
+      const signer = localSigner(
+        method === "passkey" ? "passkey" : "nsec",
+        hexToBytes(stored.secretKeyHex),
+        stored.mnemonic,
+      );
+      if (!pubkey || pubkey === signer.pubkey) {
+        setSigner(signer);
+        return signer;
+      }
+      // Cached key belongs to another identity; don't restore the wrong user.
+      clearLocalSession();
+    }
+    if (method === "nip07" && window.nostr) return await signInWithNip07();
+  } catch {
+    // Leave the user on the auth screen if restoration is unavailable.
+  }
+  return null;
 }
 
 /** Restore a mnemonic (e.g. an exported passkey/nsec backup) directly. */
@@ -273,7 +386,8 @@ export async function signInWithMnemonic(mnemonic: string): Promise<NostrSigner>
   if (!validateMnemonic(mnemonic.trim(), wordlist)) throw new Error("Invalid seed words");
   const secretKey = privateKeyFromSeedWords(mnemonic.trim());
   const signer = localSigner("nsec", secretKey, mnemonic.trim());
-  persist({ method: "nsec" });
+  persist({ method: "nsec", pubkey: signer.pubkey });
+  saveLocalSession(secretKey, mnemonic.trim());
   setSigner(signer);
   return signer;
 }

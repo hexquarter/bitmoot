@@ -1,15 +1,14 @@
-import { SparkWallet } from "@buildonspark/spark-sdk";
-import type { ExitSpeed, WalletTransfer } from "@buildonspark/spark-sdk/types";
+import type { BreezSdk, OnchainConfirmationSpeed } from "@breeztech/breez-sdk-spark/web";
+import { orgNostrKeys } from "./keys";
+import { isOrgAdmin } from "./org";
 import { getSettings } from "./settings";
 
 /**
- * Spark org wallet service.
+ * Org wallet service backed by Breez SDK Nodeless (Spark + Lightning).
  *
- * The org wallet is org-scoped (not per-user): every council member initializes
- * the same wallet from the shared org seed, which they decrypt from their
- * NIP-44-encrypted wallet share event. The account number must be identical
- * across members or they would derive different wallets — it is defined here
- * in exactly one place.
+ * Every council member initializes the same wallet from the org seed they
+ * decrypt from their NIP-44 wallet share. The storage directory is derived
+ * from that seed, so members and orgs never mix local wallet state.
  */
 
 /** USDB token identifier on Spark mainnet (6 decimals). */
@@ -18,35 +17,69 @@ export const USDB_DECIMALS = 6;
 
 /** All members must use this account number for the org wallet. */
 export function orgAccountNumber(network: "MAINNET" | "REGTEST"): number {
-  // Matches SDK defaults per network.
   return network === "MAINNET" ? 1 : 0;
 }
 
-let cachedWallet: SparkWallet | null = null;
+type BreezModule = typeof import("@breeztech/breez-sdk-spark/web");
+
+let breezPromise: Promise<BreezModule> | null = null;
+let cachedWallet: BreezSdk | null = null;
 let cachedKey = "";
 
-export function getOrgWallet(): SparkWallet | null {
+/** Load the WASM SDK only when the treasury is opened, not on app startup. */
+function loadBreez(): Promise<BreezModule> {
+  if (!breezPromise) {
+    breezPromise = import("@breeztech/breez-sdk-spark/web").then(async (breez) => {
+      await breez.default();
+      return breez;
+    });
+  }
+  return breezPromise;
+}
+
+export function getOrgWallet(): BreezSdk | null {
   return cachedWallet;
 }
 
-export function disconnectOrgWallet() {
-  cachedWallet = null;
-  cachedKey = "";
+/** Wallet writes are admin-only even if a member somehow holds the seed. */
+function requireWalletAdmin(): void {
+  if (!isOrgAdmin()) {
+    throw new Error("Only organization administrators can manage the org wallet");
+  }
 }
 
-/** Connect (or return the cached) org wallet for the current network. */
-export async function connectOrgWallet(mnemonic: string): Promise<SparkWallet> {
+export async function disconnectOrgWallet(): Promise<void> {
+  const wallet = cachedWallet;
+  cachedWallet = null;
+  cachedKey = "";
+  if (wallet) {
+    try {
+      await wallet.disconnect();
+    } catch {
+      // Ignore shutdown errors; the local cache is already cleared.
+    }
+  }
+}
+
+/** Connect (or return the cached) Breez wallet for the current org. */
+export async function connectOrgWallet(mnemonic: string): Promise<BreezSdk> {
   const { network } = getSettings();
+  const breezApiKey = import.meta.env.VITE_BREEZ_API_KEY?.trim();
   const key = `${network}:${mnemonic}`;
   if (cachedWallet && cachedKey === key) return cachedWallet;
-  const { wallet } = await SparkWallet.initialize({
-    mnemonicOrSeed: mnemonic,
-    accountNumber: orgAccountNumber(network),
-    options: { network },
-  });
-  cachedWallet = wallet;
+
+  const breez = await loadBreez();
+  const config = breez.defaultConfig(network === "MAINNET" ? "mainnet" : "regtest");
+  if (breezApiKey) config.apiKey = breezApiKey;
+
+  const orgPubkey = orgNostrKeys(mnemonic).pubkey;
+  const builder = breez.SdkBuilder.new(config, { type: "mnemonic", mnemonic }).withAccountNumber(
+    orgAccountNumber(network),
+  );
+  const withStorage = await builder.withDefaultStorage(`bitmoot-${orgPubkey.slice(0, 16)}`);
+  cachedWallet = await withStorage.build();
   cachedKey = key;
-  return wallet;
+  return cachedWallet;
 }
 
 export interface OrgBalances {
@@ -56,72 +89,140 @@ export interface OrgBalances {
   usdb: bigint;
 }
 
-export async function getOrgBalances(wallet: SparkWallet): Promise<OrgBalances> {
-  const b = await wallet.getBalance();
-  const token = b.tokenBalances.get(USDB_TOKEN_ID);
-  const usdb = token ? token.ownedBalance : BigInt(0);
-  return {
-    sats: b.satsBalance.available,
-    satsOwned: b.satsBalance.owned,
-    satsIncoming: b.satsBalance.incoming,
-    usdb,
-  };
+export async function getOrgBalances(wallet: BreezSdk): Promise<OrgBalances> {
+  const info = await wallet.getInfo({});
+  const sats = BigInt(info.balanceSats);
+  const usdb = info.tokenBalances.get(USDB_TOKEN_ID)?.balance ?? 0n;
+  return { sats, satsOwned: sats, satsIncoming: 0n, usdb };
 }
 
-export async function getOrgSparkAddress(wallet: SparkWallet): Promise<string> {
-  return wallet.getSparkAddress();
+export async function getOrgSparkAddress(wallet: BreezSdk): Promise<string> {
+  const res = await wallet.receivePayment({ paymentMethod: { type: "sparkAddress" } });
+  return res.paymentRequest;
 }
 
-export async function getOrgStaticDepositAddress(wallet: SparkWallet): Promise<string> {
-  return wallet.getStaticDepositAddress();
+export async function getOrgStaticDepositAddress(wallet: BreezSdk): Promise<string> {
+  const res = await wallet.receivePayment({
+    paymentMethod: { type: "bitcoinAddress", newAddress: false },
+  });
+  return res.paymentRequest;
 }
 
 export async function createOrgLightningInvoice(
-  wallet: SparkWallet,
+  wallet: BreezSdk,
   amountSats: number,
   memo?: string,
 ): Promise<{ invoice: string; id: string; expiresAt?: string }> {
-  const res = await wallet.createLightningInvoice({ amountSats, memo });
-  return {
-    invoice: res.invoice.encodedInvoice,
-    id: res.id,
-    expiresAt: res.invoice.expiresAt,
-  };
+  requireWalletAdmin();
+  const res = await wallet.receivePayment({
+    paymentMethod: {
+      type: "bolt11Invoice",
+      description: memo?.trim() || "BitMoot treasury",
+      amountSats: Math.max(1, Math.round(amountSats)),
+    },
+  });
+  return { invoice: res.paymentRequest, id: "", expiresAt: undefined };
+}
+
+export interface LightningPaymentResult {
+  id: string;
+  /** Best-effort resolved amount, used to compute the platform fee. */
+  amountSats: number | null;
 }
 
 export async function payOrgLightningInvoice(
-  wallet: SparkWallet,
+  wallet: BreezSdk,
   invoice: string,
   maxFeeSats?: number,
-): Promise<unknown> {
-  return wallet.payLightningInvoice({ invoice, maxFeeSats });
+  amountSats?: number,
+): Promise<LightningPaymentResult> {
+  requireWalletAdmin();
+  const prepared = await wallet.prepareSendPayment({
+    paymentRequest: { type: "input", input: invoice.trim() },
+    // Amountless BOLT-11 invoices need the amount approved in the proposal.
+    ...(amountSats != null && amountSats > 0
+      ? { amount: BigInt(Math.round(amountSats)) }
+      : {}),
+  });
+  if (maxFeeSats !== undefined && prepared.paymentMethod.type === "bolt11Invoice") {
+    const method = prepared.paymentMethod;
+    const feeSats = method.lightningFeeSats + (method.sparkTransferFeeSats ?? 0);
+    if (feeSats > maxFeeSats) throw new Error(`Estimated fee (${feeSats} sats) is above your limit`);
+  }
+  const result = await wallet.sendPayment({
+    prepareResponse: prepared,
+    options: { type: "bolt11Invoice", preferSpark: true },
+  });
+
+  let resolvedAmount: number | null = null;
+  if (
+    prepared.paymentMethod.type === "bolt11Invoice" &&
+    prepared.paymentMethod.invoiceDetails.amountMsat != null
+  ) {
+    resolvedAmount = Math.round(prepared.paymentMethod.invoiceDetails.amountMsat / 1000);
+  } else if (prepared.amount != null) {
+    resolvedAmount = Number(prepared.amount);
+  }
+  return { id: result.payment.id, amountSats: resolvedAmount };
 }
 
 export async function sendUsdb(
-  wallet: SparkWallet,
+  wallet: BreezSdk,
   receiverSparkAddress: string,
   amount: number,
 ): Promise<string> {
+  requireWalletAdmin();
   const tokenAmount = BigInt(Math.round(amount * 10 ** USDB_DECIMALS));
-  return wallet.transferTokens({
+  const prepared = await wallet.prepareSendPayment({
+    paymentRequest: { type: "input", input: receiverSparkAddress.trim() },
     tokenIdentifier: USDB_TOKEN_ID,
-    tokenAmount,
-    receiverSparkAddress,
+    amount: tokenAmount,
   });
+  const result = await wallet.sendPayment({
+    prepareResponse: prepared,
+    options: { type: "sparkAddress" },
+  });
+  return result.payment.id;
 }
 
 export async function withdrawOnchain(
-  wallet: SparkWallet,
+  wallet: BreezSdk,
   onchainAddress: string,
   amountSats: number,
-  exitSpeed: ExitSpeed = "FAST" as ExitSpeed,
-): Promise<unknown> {
-  return wallet.withdraw({ onchainAddress, amountSats, exitSpeed });
+  speed: OnchainConfirmationSpeed = "fast",
+): Promise<string> {
+  requireWalletAdmin();
+  const prepared = await wallet.prepareSendPayment({
+    paymentRequest: { type: "input", input: onchainAddress.trim() },
+    amount: BigInt(Math.round(amountSats)),
+  });
+  const result = await wallet.sendPayment({
+    prepareResponse: prepared,
+    options: { type: "bitcoinAddress", confirmationSpeed: speed },
+  });
+  return result.payment.id;
 }
 
-export async function getOrgTransfers(wallet: SparkWallet, limit = 25): Promise<WalletTransfer[]> {
-  const res = await wallet.getTransfers(limit);
-  return res.transfers;
+/** UI-neutral transfer shape so pages don't depend on SDK types. */
+export interface OrgTransfer {
+  id: string;
+  type: string;
+  status: string;
+  amount: bigint;
+  direction: "INCOMING" | "OUTGOING";
+  createdAt: number;
+}
+
+export async function getOrgTransfers(wallet: BreezSdk, limit = 25): Promise<OrgTransfer[]> {
+  const res = await wallet.listPayments({ limit, sortAscending: false });
+  return res.payments.map((payment) => ({
+    id: payment.id,
+    type: payment.method,
+    status: payment.status,
+    amount: payment.amount,
+    direction: payment.paymentType === "receive" ? "INCOMING" : "OUTGOING",
+    createdAt: payment.timestamp,
+  }));
 }
 
 /** Format a USDB bigint amount for display (6 decimals). */
