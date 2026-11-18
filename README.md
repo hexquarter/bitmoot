@@ -49,15 +49,19 @@ Governance elects council.
 2. Add repository secrets:
    - `VITE_BREEZ_API_KEY`
    - `VITE_PLATFORM_FEE_ADDRESS` (leave unset to disable the platform fee)
-3. Push to `master`.
+3. Set the custom domain in **Settings → Pages → Custom domain**. `public/CNAME` keeps it attached across deployments.
+4. Push to `master`.
 
-The Vite base path is derived from `GITHUB_REPOSITORY`, so project pages resolve at `https://<owner>.github.io/<repo>/`. `dist/404.html` is generated at build time to preserve deep links such as `/app/proposals` on GitHub Pages.
+The Vite base path is auto-detected: a `public/CNAME` file means a custom domain and a `/` base; otherwise it uses the project path `/<repo>/`. An optional repository variable `BASE_PATH` can override this if needed.
+
+`dist/404.html` is generated at build time to preserve deep links such as `/app/proposals` on GitHub Pages.
 
 For a local production check with the same base path:
 
 ```sh
-BASE_PATH=/bitmoot/ yarn build:pages
-BASE_PATH=/bitmoot/ yarn preview
+yarn build:pages                      # uses public/CNAME => "/"
+BASE_PATH=/bitmoot/ yarn build:pages  # simulate a project page
+yarn preview
 ```
 
 ## License

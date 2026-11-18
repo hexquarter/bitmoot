@@ -1,12 +1,14 @@
-import { writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 
 /**
  * GitHub Pages serves this file for unknown paths. It preserves the requested
  * deep link in sessionStorage and sends the browser to the app root, where
  * src/main.tsx restores the original URL before React Router mounts.
  */
+const hasCustomDomain = existsSync(new URL("../public/CNAME", import.meta.url));
 const repo = process.env.GITHUB_REPOSITORY?.split("/")[1];
-const base = process.env.BASE_PATH ?? (repo ? `/${repo}/` : "/");
+const base =
+  process.env.BASE_PATH || (hasCustomDomain ? "/" : repo ? `/${repo}/` : "/");
 
 const html = `<!doctype html>
 <html lang="en">

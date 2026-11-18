@@ -18,7 +18,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      BASE_PATH: /${{ github.event.repository.name }}/
+      # Optional override. Usually unnecessary: the base path is auto-detected
+      # from public/CNAME (custom domain => "/") or the repo name (=> "/<repo>/").
+      BASE_PATH: ${{ vars.BASE_PATH }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
