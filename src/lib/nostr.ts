@@ -51,8 +51,8 @@ export async function publish(event: Event): Promise<void> {
 }
 
 /** Query multiple relays for events matching the filter (deduplicated). */
-export async function query(filter: Filter, maxWait?: number): Promise<Event[]> {
-  return getPool().querySync(relays(), filter, { maxWait });
+export async function query(filter: Filter, maxWait?: number, relayUrls: string[] = relays()): Promise<Event[]> {
+  return getPool().querySync(relayUrls, filter, { maxWait });
 }
 
 /** Query and return the newest matching event. */

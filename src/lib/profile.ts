@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { npubEncode } from "nostr-tools/nip19";
 import type { Event } from "nostr-tools";
-import { Kind, publish, query, subscribe } from "./nostr";
-import { getAuth } from "./auth";
+import { Kind, publish, query, relays, subscribe } from "./nostr";
+import { DEFAULT_RELAYS } from "./settings";
+import { getAuth, subscribeAuth } from "./auth";
 
 /**
  * Public Nostr profile metadata (kind 0, NIP-01).
@@ -41,6 +42,8 @@ interface CachedProfile {
   createdAt: number;
   /** Last time relays were asked, so stale profiles can be re-fetched. */
   fetchedAt: number;
+  /** Last time the fallback relay list was asked, for keys found nowhere. */
+  fallbackAt?: number;
 }
 
 const PROFILE_TTL_MS = 60_000;
@@ -136,7 +139,57 @@ export async function fetchProfiles(pubkeys: string[], force = false): Promise<v
   } finally {
     for (const pubkey of due) inFlight.delete(pubkey);
   }
+
+  // The user-configured relay list may be stale or partially dead. If a key
+  // was found nowhere, ask the default relays once before declaring it
+  // "not found", so profiles still load from the wider network.
+  const now2 = Date.now();
+  const missing = due.filter((pubkey) => {
+    const cached = cache.get(pubkey);
+    return !cached?.profile && (!cached?.fallbackAt || now2 - cached.fallbackAt > PROFILE_TTL_MS);
+  });
+  const fallback = DEFAULT_RELAYS.filter((url) => !relays().includes(url));
+  if (missing.length && fallback.length) {
+    try {
+      const extra = await query(
+        {
+          kinds: [Kind.Profile],
+          authors: missing,
+          limit: Math.max(20, missing.length * 10),
+        },
+        8000,
+        fallback,
+      );
+      extra.sort((a, b) => a.created_at - b.created_at);
+      for (const event of extra) ingestProfile(event);
+    } catch {
+      /* fallthrough — the primary relays were already asked */
+    }
+    for (const pubkey of missing) {
+      const cached = cache.get(pubkey);
+      if (cached) cache.set(pubkey, { ...cached, fallbackAt: now2 });
+    }
+  }
+
   emit();
+}
+
+/**
+ * Load the signed-in user's public profile as soon as they connect — no matter
+ * which sign-in method or page — so names, avatars and contact details are
+ * ready from relay metadata without waiting for a component to request them.
+ * Called once at app startup.
+ */
+let syncStarted = false;
+export function startProfileSync(): void {
+  if (syncStarted) return;
+  syncStarted = true;
+  const load = () => {
+    const { signer } = getAuth();
+    if (signer) void fetchProfiles([signer.pubkey]).catch(() => undefined);
+  };
+  load();
+  subscribeAuth(load);
 }
 
 export function getProfile(pubkey: string): NostrProfile | null {

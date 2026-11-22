@@ -351,10 +351,26 @@ export async function unlockPasskey(): Promise<NostrSigner> {
 }
 
 /**
+ * NIP-07 extensions inject window.nostr asynchronously, often shortly after
+ * the app has already started. A single check races that injection and would
+ * sign the user out on every refresh, so poll briefly for the extension.
+ */
+async function waitForNip07(timeoutMs = 3000): Promise<boolean> {
+  if (window.nostr) return true;
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    if (window.nostr) return true;
+  }
+  return Boolean(window.nostr);
+}
+
+/**
  * Restore a session on page load. Locally derived keys (passkey/nsec/mnemonic)
- * resume from the cached session. NIP-07 asks its extension silently. Passkeys
- * deliberately do not trigger WebAuthn here — that needs a user tap, so the
- * auth screen shows the "Continue with passkey" button instead.
+ * resume from the cached session. NIP-07 asks its extension silently, waiting
+ * for it to inject if needed. Passkeys deliberately do not trigger WebAuthn
+ * here — that needs a user tap, so the auth screen shows the
+ * "Continue with passkey" button instead.
  */
 export async function restoreSession(): Promise<NostrSigner | null> {
   if (getAuth().signer) return getAuth().signer;
@@ -374,7 +390,7 @@ export async function restoreSession(): Promise<NostrSigner | null> {
       // Cached key belongs to another identity; don't restore the wrong user.
       clearLocalSession();
     }
-    if (method === "nip07" && window.nostr) return await signInWithNip07();
+    if (method === "nip07" && (await waitForNip07())) return await signInWithNip07();
   } catch {
     // Leave the user on the auth screen if restoration is unavailable.
   }

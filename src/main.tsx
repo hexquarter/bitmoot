@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App.tsx";
+import { startProfileSync } from "./lib/profile";
 import "./index.css";
 
 // GitHub Pages has no server-side SPA rewrite. public/404.html stores the
@@ -15,6 +16,10 @@ try {
 } catch {
   /* sessionStorage unavailable — deep links still load the app root */
 }
+
+// Load the connected user's public profile (kind 0) from relay metadata as
+// soon as a session exists, on every sign-in path.
+startProfileSync();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
