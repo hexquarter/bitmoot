@@ -25,10 +25,15 @@ import {
   fetchUtxos,
   fetchRecommendedFeeRate,
   broadcastTx,
+  verifyVaultSpendPsbt,
+  verifyMigrationPsbt,
   type VaultInfo,
   type Utxo,
 } from "./vault";
-import { disconnectOrgWallet } from "./spark";
+import {
+  disconnectOrgWallet, connectOrgWallet, getOrgBalances, getOrgSparkAddress,
+  sendSatsToSparkAddress, sendUsdb, USDB_DECIMALS, withdrawOnchain,
+} from "./spark";
 
 /**
  * Org data layer. Everything an org publishes lives on Nostr under a single
@@ -90,7 +95,27 @@ export interface OrgConfig {
   council: string[];
   /** Authoritative vault signer x-only keys (hex). */
   vaultSigners: string[];
+  /**
+   * Operational cap: max sats kept spendable in the hot Spark wallet. Excess
+   * is swept to the reserve vault, and hot payments above the cap are refused
+   * in favour of a multisig-settled on-chain proposal. Undefined = no cap.
+   */
+  hotCapSats?: number;
+  /** Vaults replaced by a signer-set/threshold change; their balance is migratable. */
+  retiredVaults?: RetiredVault[];
+  /** Who may write content and proposals. Absent = defaults (admins post, members propose). */
+  permissions?: Partial<OrgPermissions>;
   createdAt: number;
+}
+
+/** A vault address that no longer matches the current signer set. */
+export interface RetiredVault {
+  threshold: number;
+  /** x-only keys that could spend it (the signer set at retirement time). */
+  signers: string[];
+  address: string;
+  scriptHex: string;
+  retiredAt: number;
 }
 
 export interface OrgMember {
@@ -185,7 +210,9 @@ export interface ProposalView {
   createdAt: number;
   title: string;
   body: string;
-  type: "payment" | "general";
+  type: "payment" | "general" | "config";
+  /** Set for config proposals: the governance change being voted on. */
+  configChange?: ConfigChangeInput;
   /** Set for payment proposals so Payments can unlock only approved methods. */
   paymentMethod?: PaymentMethod;
   /** Invoice, Spark address, or Bitcoin address approved by the proposal. */
@@ -281,6 +308,7 @@ const store = {
   events: new Map<string, Event>(), // deduped raw events
   byKindAuthorD: new Map<string, Event>(), // latest addressable: `${kind}:${author}:${d}`
   seed: null as string | null,
+  walletSeed: null as string | null,
   unsub: null as null | (() => void),
   subKey: "",
 };
@@ -485,6 +513,7 @@ function rebuild() {
       amountSats?: number;
       amountUsd?: number;
       onchainAddress?: string;
+      configChange?: ConfigChangeInput;
     }>(ev);
     if (!content) continue;
     const votes = votesByProposal.get(ev.id) ?? new Map();
@@ -492,13 +521,18 @@ function rebuild() {
     const yesCount = voteList.filter((v) => v.choice === "yes" && voterSet.has(v.author)).length;
     const noCount = voteList.filter((v) => v.choice === "no" && voterSet.has(v.author)).length;
     const execution = executions.get(ev.id);
+    const configChange =
+      content.configChange && typeof content.configChange === "object" && content.configChange.action
+        ? content.configChange
+        : undefined;
     proposals.push({
       id: ev.id,
       author: ev.pubkey,
       createdAt: ev.created_at,
       title: content.title,
       body: content.body,
-      type: content.type === "payment" ? "payment" : "general",
+      type: content.type === "payment" ? "payment" : content.type === "config" ? "config" : "general",
+      configChange,
       paymentMethod:
         content.type !== "payment"
           ? undefined
@@ -660,10 +694,44 @@ function signAsMe(template: EventTemplate): Promise<VerifiedEvent> {
 }
 
 /**
+ * When a config change alters the vault signer set or threshold, the previous
+ * vault address is recorded so its balance stays recoverable (swept into the
+ * new vault with old-threshold co-signatures).
+ */
+function retiredFrom(prev: OrgConfig | undefined, next: OrgConfig): RetiredVault[] {
+  const carried = prev?.retiredVaults ?? [];
+  if (!prev) return carried;
+  const key = (c: OrgConfig) => `${c.threshold}|${[...c.vaultSigners].sort().join(",")}`;
+  if (key(prev) === key(next)) return carried;
+  try {
+    const oldVault = buildVault(prev.threshold, prev.vaultSigners);
+    return [
+      ...carried.filter((r) => r.address !== oldVault.address),
+      {
+        threshold: prev.threshold,
+        signers: prev.vaultSigners,
+        address: oldVault.address,
+        scriptHex: oldVault.scriptHex,
+        retiredAt: now(),
+      },
+    ];
+  } catch {
+    return carried;
+  }
+}
+
+/**
  * Publish the org config. The `p` tags are intentional: they let any member
  * discover the orgs they belong to with a relay query on their own pubkey.
+ * `prev` (the config being replaced) lets us record retired vault addresses.
  */
-async function publishOrgConfig(config: OrgConfig, orgSk: Uint8Array, addr: string): Promise<void> {
+async function publishOrgConfig(
+  config: OrgConfig,
+  orgSk: Uint8Array,
+  addr: string,
+  prev?: OrgConfig,
+): Promise<void> {
+  const payload: OrgConfig = { ...config, retiredVaults: retiredFrom(prev, config) };
   const event = finalizeEvent(
     {
       kind: Kind.OrgConfig,
@@ -671,15 +739,15 @@ async function publishOrgConfig(config: OrgConfig, orgSk: Uint8Array, addr: stri
       tags: [
         ["d", ORG_ID],
         ["a", addr],
-        ["name", config.name],
-        ...config.council.map((pubkey) => ["p", pubkey]),
+        ["name", payload.name],
+        ...payload.council.map((pubkey) => ["p", pubkey]),
       ],
-      content: JSON.stringify(config),
+      content: JSON.stringify(payload),
     },
     orgSk,
   );
   await publish(event);
-  cacheOrgConfig(orgPubkeyFromAddress(addr), config);
+  cacheOrgConfig(orgPubkeyFromAddress(addr), payload);
 }
 
 function orgPubkeyFromAddress(addr: string): string {
@@ -728,10 +796,33 @@ export function hasOrgAccess(): boolean {
   return state.myRole === "admin" || state.myRole === "member";
 }
 
+/** Permission defaults preserve the pre-permissions behavior. */
+function effectivePermissions(): OrgPermissions {
+  return {
+    feedPost: state.config?.permissions?.feedPost ?? "admins",
+    createProposal: state.config?.permissions?.createProposal ?? "members",
+  };
+}
+
+/** May the signed-in role publish to the org feed? */
+export function canPublishFeed(): boolean {
+  if (state.myRole === "admin") return true;
+  if (state.myRole !== "member") return false;
+  return effectivePermissions().feedPost === "members";
+}
+
+/** May the signed-in role create proposals? */
+export function canCreateProposal(): boolean {
+  if (state.myRole === "admin") return true;
+  if (state.myRole !== "member") return false;
+  return effectivePermissions().createProposal === "members";
+}
+
 /**
  * Vault signer secret for the current member. Derived from the local nostr
  * secret when available (passkey/nsec); for NIP-07 a random key is generated
- * once and stored NIP-44-encrypted to self.
+ * once and stored NIP-44-encrypted to self. The store key is member-scoped
+ * (not org-scoped) so the same signer key carries across treasury rotation.
  */
 async function getVaultSignerSecret(orgPubkeyOverride?: string): Promise<Uint8Array> {
   const signer = requireSigner();
@@ -740,9 +831,24 @@ async function getVaultSignerSecret(orgPubkeyOverride?: string): Promise<Uint8Ar
   if (!orgPubkey) throw new Error("No active org");
   if (signer.secretKey) return vaultSignerKeys(signer.secretKey).secretKey;
   // NIP-07 path
-  const storeKey = `bitmoot.vaultsigner.${orgPubkey}`;
+  const storeKey = "bitmoot.vaultsigner.self";
   const existing = localStorage.getItem(storeKey);
   if (existing) return hexToBytes(await signer.nip44DecryptFrom(signer.pubkey, existing));
+  // Older versions stored the key per-org; reuse it when present.
+  for (let i = 0; i < localStorage.length; i++) {
+    const legacyKey = localStorage.key(i);
+    if (legacyKey && legacyKey.startsWith("bitmoot.vaultsigner.")) {
+      const legacy = localStorage.getItem(legacyKey);
+      if (!legacy) continue;
+      try {
+        const secret = hexToBytes(await signer.nip44DecryptFrom(signer.pubkey, legacy));
+        localStorage.setItem(storeKey, legacy);
+        return secret;
+      } catch {
+        /* try next */
+      }
+    }
+  }
   const secret = new Uint8Array(32);
   crypto.getRandomValues(secret);
   const encrypted = await signer.nip44EncryptTo(signer.pubkey, toHex(secret));
@@ -965,12 +1071,12 @@ export interface CreateOrgOptions {
 
 export interface CreatedOrg {
   orgNpub: string;
-  seed: string;
 }
 
 export async function createOrg(opts: CreateOrgOptions): Promise<CreatedOrg> {
   const signer = requireSigner();
   const seed = generateOrgSeed();
+  const walletSeed = generateOrgSeed();
   const { secretKey: orgSk, pubkey: orgPubkey, npub: orgNpub } = orgNostrKeys(seed);
   const addr = orgAddress(orgPubkey);
 
@@ -995,7 +1101,7 @@ export async function createOrg(opts: CreateOrgOptions): Promise<CreatedOrg> {
 
   const shareEvents: VerifiedEvent[] = [];
   for (const memberPubkey of council) {
-    const payload = JSON.stringify({ mnemonic: seed });
+    const payload = JSON.stringify({ mnemonic: seed, walletSeed });
     const conversationKey = nip44.getConversationKey(orgSk, memberPubkey);
     const encrypted = nip44.encrypt(payload, conversationKey);
     shareEvents.push(
@@ -1028,8 +1134,11 @@ export async function createOrg(opts: CreateOrgOptions): Promise<CreatedOrg> {
 
   setSettings({ activeOrgNpub: orgNpub });
   store.seed = seed;
+  store.walletSeed = walletSeed;
   ensureSubscribed();
-  return { orgNpub, seed };
+  // The seeds never leave this module in plain text: they were encrypted into
+  // a share for each admin above and stay in memory only for signing.
+  return { orgNpub };
 }
 
 export async function joinOrg(note: string, orgNpub?: string): Promise<void> {
@@ -1059,8 +1168,8 @@ export async function joinOrg(note: string, orgNpub?: string): Promise<void> {
   await publish(joinEvent);
 }
 
-/** Decrypt this member's wallet share and unlock the treasury (Spark + org key). */
-export async function unlockTreasury(): Promise<string> {
+/** Decrypt this member's wallet share in memory to sign; the seeds are never returned. */
+export async function unlockTreasury(): Promise<void> {
   const orgPubkey = state.orgPubkey;
   if (!orgPubkey) throw new Error("No active org");
   requireAdmin();
@@ -1077,13 +1186,15 @@ export async function unlockTreasury(): Promise<string> {
     try {
       const json = JSON.parse(await signer.nip44DecryptFrom(orgPubkey, ev.content)) as {
         mnemonic?: string;
+        walletSeed?: string;
       };
       if (!json.mnemonic) continue;
       const keys = orgNostrKeys(json.mnemonic);
       if (keys.pubkey !== orgPubkey) continue; // wrong org
       store.seed = json.mnemonic;
+      store.walletSeed = json.walletSeed ?? json.mnemonic; // legacy shares predate the split
       rebuild();
-      return json.mnemonic;
+      return;
     } catch {
       /* try next share */
     }
@@ -1093,6 +1204,7 @@ export async function unlockTreasury(): Promise<string> {
 
 export function lockTreasury() {
   store.seed = null;
+  store.walletSeed = null;
   disconnectOrgWallet();
   rebuild();
 }
@@ -1102,28 +1214,205 @@ export function treasurySeed(): string | null {
   return state.myRole === "admin" ? store.seed : null;
 }
 
-/** Approve a join request: send them a seed share and extend the council + vault. */
-export async function approveMember(memberPubkey: string): Promise<void> {
+/**
+ * The Spark wallet seed — deliberately separate from the org identity seed so
+ * the wallet can be rotated without changing the org's npub or history.
+ * Legacy shares (pre-decoupling) fall back to the org seed.
+ */
+export function orgWalletSeed(): string | null {
+  return state.myRole === "admin" ? store.walletSeed ?? store.seed : null;
+}
+
+/** The active org's hex pubkey, for wallet connection outside React. */
+export function getActiveOrgPubkey(): string | null {
+  return state.orgPubkey;
+}
+
+// ---------------------------------------------------------------------------
+// Two-tier treasury: operational (Spark) vs reserve (L1 multisig)
+// ---------------------------------------------------------------------------
+
+/** True when a hot-wallet payment is above the operational cap and must instead be settled from the reserve vault. */
+export function exceedsOperationalCap(amountSats: number | null | undefined): boolean {
+  const cap = state.config?.hotCapSats;
+  if (cap == null || cap <= 0) return false;
+  return amountSats != null && amountSats > cap;
+}
+
+/**
+ * Set the operational cap — the sats kept spendable in the hot Spark wallet.
+ * Signed with the org key, so it needs an unlocked treasury.
+ */
+export async function updateTreasuryPolicy(hotCapSats: number): Promise<void> {
+  requireAdmin();
+  const { orgSk, orgPubkey } = requireSeed();
+  const config = state.config;
+  if (!config) throw new Error("Org config not loaded yet");
+  if (!Number.isFinite(hotCapSats) || hotCapSats < 0) throw new Error("Invalid operational cap");
+  const updated: OrgConfig = { ...config, hotCapSats: Math.floor(hotCapSats) };
+  await publishOrgConfig(updated, orgSk, orgAddress(orgPubkey), config);
+}
+
+/**
+ * Move Spark balance above the operational cap into the reserve vault. Funds
+ * only become harder to steal by this move, so it needs no proposal: it is a
+ * cooperative Spark→L1 exit paying the multisig vault address.
+ */
+export async function sweepExcessToVault(): Promise<{ sweptSats: number; reference: string } | null> {
+  requireAdmin();
+  const orgPubkey = state.orgPubkey!;
+  const walletSeed = orgWalletSeed();
+  if (!walletSeed) throw new Error("Treasury is locked — unlock the org seed first");
+  const vault = state.vault;
+  const cap = state.config?.hotCapSats;
+  if (!vault) throw new Error("Reserve vault is not ready");
+  if (cap == null) throw new Error("Set the operational cap first");
+  const wallet = await connectOrgWallet(orgPubkey, walletSeed);
+  const balances = await getOrgBalances(wallet);
+  const excess = balances.sats - BigInt(cap);
+  if (excess <= 0n) return null;
+  const reference = await withdrawOnchain(wallet, vault.address, Number(excess));
+  return { sweptSats: Number(excess), reference };
+}
+
+export interface WalletRotationResult {
+  sweptSats: number;
+  sweptUsdb: number;
+  sweepErrors: string[];
+}
+
+/**
+ * Rotate the Spark wallet seed WITHOUT touching the org identity: the npub,
+ * proposals, feed posts and all history stay exactly as they are.
+ *
+ * Generates a fresh wallet seed, re-publishes every admin's share with it
+ * (same org key, replaceable per-member events), and evacuates the old
+ * Spark wallet into the new one. A leaked old seed share afterwards only
+ * controls the old, emptied wallet — the identity keeps its records.
+ */
+export async function rotateWalletSeed(): Promise<WalletRotationResult> {
   requireAdmin();
   const { seed, orgSk, orgPubkey } = requireSeed();
   const config = state.config;
   if (!config) throw new Error("Org config not loaded yet");
   const addr = orgAddress(orgPubkey);
-  if (config.council.includes(memberPubkey)) throw new Error("Already a council member");
+
+  const newWalletSeed = generateOrgSeed();
+
+  // Re-publish every admin's share with the new wallet seed (latest wins by d-tag).
+  const payload = JSON.stringify({ mnemonic: seed, walletSeed: newWalletSeed });
+  const shareEvents: VerifiedEvent[] = config.council.map((member) =>
+    finalizeEvent(
+      {
+        kind: Kind.WalletShare,
+        created_at: now(),
+        tags: [["d", `${ORG_ID}:${member}`], ["a", addr], ["p", member]],
+        content: nip44.encrypt(payload, nip44.getConversationKey(orgSk, member)),
+      },
+      orgSk,
+    ),
+  );
+  await Promise.allSettled(shareEvents.map((ev) => publish(ev)));
+
+  // Evacuate the old Spark wallet into the new one (Spark → Spark).
+  const sweepErrors: string[] = [];
+  let sweptSats = 0;
+  let sweptUsdb = 0;
+  try {
+    const oldWallet = await connectOrgWallet(orgPubkey, store.walletSeed ?? seed);
+    const balances = await getOrgBalances(oldWallet);
+    if (balances.sats > 0n || balances.usdb > 0n) {
+      const newWallet = await connectOrgWallet(orgPubkey, newWalletSeed);
+      const sparkAddress = await getOrgSparkAddress(newWallet);
+      if (balances.sats > 0n) {
+        try {
+          await sendSatsToSparkAddress(oldWallet, sparkAddress, Number(balances.sats));
+          sweptSats = Number(balances.sats);
+        } catch (e) {
+          sweepErrors.push(`sats: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+      if (balances.usdb > 0n) {
+        try {
+          await sendUsdb(oldWallet, sparkAddress, Number(balances.usdb) / 10 ** USDB_DECIMALS);
+          sweptUsdb = Number(balances.usdb);
+        } catch (e) {
+          sweepErrors.push(`USDB: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+    }
+  } catch (e) {
+    sweepErrors.push(e instanceof Error ? e.message : String(e));
+  }
+
+  store.walletSeed = newWalletSeed;
+  rebuild();
+  return { sweptSats, sweptUsdb, sweepErrors };
+}
+
+/** Approve a join request: send them a seed share and extend the council + vault. */
+export async function approveMember(memberPubkey: string): Promise<void> {
+  return addMemberInternal(memberPubkey);
+}
+
+/** Add a member directly by npub, optionally with their vault signer key provided out-of-band. */
+export async function addMemberByNpub(npub: string, vaultXOnly?: string): Promise<void> {
+  return addMemberInternal(npubToHex(npub.trim()), vaultXOnly);
+}
+
+/**
+ * Add an x-only vault signer key to the vault config — for members who hand
+ * you their key out-of-band instead of publishing it themselves. Signer keys
+ * are public, so pasting them is safe; the threshold still guards spends.
+ */
+export async function addVaultSignerKey(xOnly: string): Promise<void> {
+  requireAdmin();
+  const { orgSk, orgPubkey } = requireSeed();
+  const config = state.config;
+  if (!config) throw new Error("Org config not loaded yet");
+  const key = xOnly.trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(key)) {
+    throw new Error("Vault signer keys are 64 hex characters (x-only, no 02/03 prefix)");
+  }
+  if (config.vaultSigners.includes(key)) throw new Error("This signer key is already in the vault");
+  const updated: OrgConfig = { ...config, vaultSigners: [...config.vaultSigners, key] };
+  await publishOrgConfig(updated, orgSk, orgAddress(orgPubkey));
+}
+
+/**
+ * Extend the council with a new member, publish the updated config, and send
+ * them their encrypted seed share. Their vault signer key is pulled in when
+ * already published (or provided directly); otherwise `syncVaultSigners` or
+ * the manual "add signer key" action adds it once available.
+ */
+async function addMemberInternal(memberPubkey: string, providedXOnly?: string): Promise<void> {
+  requireAdmin();
+  const { seed, orgSk, orgPubkey } = requireSeed();
+  const config = state.config;
+  if (!config) throw new Error("Org config not loaded yet");
+  const addr = orgAddress(orgPubkey);
+  if (config.council.includes(memberPubkey)) throw new Error("Already a member");
 
   const council = [...config.council, memberPubkey];
   const vaultSigners = [...config.vaultSigners];
 
-  // look up the member's published vault key
-  const signerEvents = await query({
-    kinds: [Kind.VaultSigner],
-    authors: [memberPubkey],
-    "#d": [ORG_ID],
-  });
-  const latestSigner = signerEvents.sort((a, b) => b.created_at - a.created_at)[0];
-  const xOnly = latestSigner ? parseJsonContent<{ xOnly: string }>(latestSigner)?.xOnly : null;
-  if (!xOnly) throw new Error("Member has not published a vault signer key");
-  if (!vaultSigners.includes(xOnly)) vaultSigners.push(xOnly);
+  const provided = providedXOnly?.trim().toLowerCase();
+  if (provided) {
+    if (!/^[0-9a-f]{64}$/.test(provided)) {
+      throw new Error("Vault signer keys are 64 hex characters (x-only, no 02/03 prefix)");
+    }
+    if (!vaultSigners.includes(provided)) vaultSigners.push(provided);
+  } else {
+    // Pull the member's published vault key when it exists.
+    const signerEvents = await query({
+      kinds: [Kind.VaultSigner],
+      authors: [memberPubkey],
+      "#d": [ORG_ID],
+    });
+    const latestSigner = signerEvents.sort((a, b) => b.created_at - a.created_at)[0];
+    const xOnly = latestSigner ? parseJsonContent<{ xOnly: string }>(latestSigner)?.xOnly : null;
+    if (xOnly && !vaultSigners.includes(xOnly)) vaultSigners.push(xOnly);
+  }
 
   const updated: OrgConfig = { ...config, council, vaultSigners };
 
@@ -1139,7 +1428,7 @@ export async function approveMember(memberPubkey: string): Promise<void> {
     orgSk,
   );
 
-  await publishOrgConfig(updated, orgSk, addr);
+  await publishOrgConfig(updated, orgSk, addr, config);
   await publish(shareEvent);
 }
 
@@ -1163,7 +1452,7 @@ export async function syncVaultSigners(): Promise<void> {
   }
 
   const updated: OrgConfig = { ...config, vaultSigners: [...vaultSigners] };
-  await publishOrgConfig(updated, orgSk, addr);
+  await publishOrgConfig(updated, orgSk, addr, config);
 }
 
 export async function publishVaultSigner(): Promise<void> {
@@ -1181,21 +1470,296 @@ export async function publishVaultSigner(): Promise<void> {
   await publish(ev);
 }
 
+/** Who may perform a content action. */
+export type ContentPermission = "admins" | "members";
+
+export interface OrgPermissions {
+  /** Publishing to the org feed (kind 1). Default "admins". */
+  feedPost: ContentPermission;
+  /** Creating proposals (kind 37000). Default "members". */
+  createProposal: ContentPermission;
+}
+
+/** A governance change to the org configuration, applied after its proposal passes. */
+export interface ConfigChangeInput {
+  action: "setThreshold" | "addSigner" | "removeSigner" | "addMember" | "removeMember" | "setPermissions";
+  /** setThreshold: the new M value. */
+  threshold?: number;
+  /** addSigner / removeSigner: the x-only key. */
+  xOnly?: string;
+  /** addMember / removeMember */
+  memberNpub?: string;
+  /** addMember: optional out-of-band vault signer key. */
+  memberXOnly?: string;
+  /** removeMember: an extra vault key to strip (e.g. one added out-of-band for them). */
+  removeXOnly?: string;
+  /** setPermissions: partial permission update. */
+  permissions?: Partial<OrgPermissions>;
+}
+
 export interface ProposalInput {
   title: string;
   body: string;
-  type: "payment" | "general";
+  type: "payment" | "general" | "config";
   paymentMethod?: PaymentMethod;
   payee?: string;
   amountSats?: number;
   amountUsd?: number;
   onchainAddress?: string;
+  configChange?: ConfigChangeInput;
+}
+
+const X_ONLY_KEY_RE = /^[0-9a-f]{64}$/;
+
+/** Human-readable summary of a config change (lists, toasts, titles). */
+export function configChangeSummary(change: ConfigChangeInput): string {
+  if (change.action === "setThreshold") return `Change vault threshold to ${change.threshold}-of-N`;
+  if (change.action === "addSigner") return `Add vault signer ${change.xOnly?.slice(0, 10) ?? ""}…`;
+  if (change.action === "removeSigner") return `Remove vault signer ${change.xOnly?.slice(0, 10) ?? ""}…`;
+  if (change.action === "removeMember") return `Remove member ${shortNpub(change.memberNpub ?? "")}`;
+  if (change.action === "setPermissions") {
+    const parts: string[] = [];
+    if (change.permissions?.feedPost) parts.push(`feed posting → ${change.permissions.feedPost}`);
+    if (change.permissions?.createProposal) parts.push(`proposals → ${change.permissions.createProposal}`);
+    return `Update permissions: ${parts.join(", ") || "no change"}`;
+  }
+  return `Add member ${change.memberNpub?.slice(0, 16) ?? ""}…`;
+}
+
+function configChangeTitle(change: ConfigChangeInput): string {
+  if (change.action === "setThreshold") return `Change vault threshold to ${change.threshold}`;
+  if (change.action === "addSigner") return `Add vault signer ${change.xOnly?.slice(0, 12) ?? ""}…`;
+  if (change.action === "removeSigner") return `Remove vault signer ${change.xOnly?.slice(0, 12) ?? ""}…`;
+  if (change.action === "removeMember") return `Remove member ${shortNpub(change.memberNpub ?? "")}`;
+  if (change.action === "setPermissions") return "Update content permissions";
+  return `Add member ${shortNpub(change.memberNpub ?? "")}`;
+}
+
+/** Validate a config change against the CURRENT config (proposal time and execution time). */
+function validateConfigChange(change: ConfigChangeInput): void {
+  const config = state.config;
+  if (!config) throw new Error("Org config not loaded yet");
+  if (change.action === "setThreshold") {
+    const t = change.threshold;
+    if (t == null || !Number.isInteger(t) || t < 1) {
+      throw new Error("The threshold must be a positive whole number");
+    }
+    if (t > config.vaultSigners.length) {
+      throw new Error(`Threshold cannot exceed the ${config.vaultSigners.length} published signer keys`);
+    }
+    if (t === config.threshold) throw new Error(`The threshold is already ${t}`);
+  } else if (change.action === "addSigner") {
+    const key = change.xOnly?.trim().toLowerCase();
+    if (!key || !X_ONLY_KEY_RE.test(key)) {
+      throw new Error("Vault signer keys are 64 hex characters (x-only, no 02/03 prefix)");
+    }
+    if (config.vaultSigners.includes(key)) throw new Error("This signer key is already in the vault");
+  } else if (change.action === "removeSigner") {
+    const key = change.xOnly?.trim().toLowerCase();
+    if (!key || !X_ONLY_KEY_RE.test(key)) {
+      throw new Error("Vault signer keys are 64 hex characters (x-only, no 02/03 prefix)");
+    }
+    if (!config.vaultSigners.includes(key)) throw new Error("This signer key is not in the vault");
+    if (config.vaultSigners.length - 1 < config.threshold) {
+      throw new Error(`Removing this signer would leave fewer keys than the ${config.threshold}-of-N threshold`);
+    }
+  } else if (change.action === "addMember") {
+    if (!change.memberNpub?.trim().startsWith("npub1")) {
+      throw new Error("Enter an npub (starts with npub1)");
+    }
+    const hex = npubToHex(change.memberNpub.trim());
+    if (config.council.includes(hex)) throw new Error("This member is already in the organization");
+    const provided = change.memberXOnly?.trim().toLowerCase();
+    if (provided && !X_ONLY_KEY_RE.test(provided)) {
+      throw new Error("Vault signer keys are 64 hex characters (x-only, no 02/03 prefix)");
+    }
+  } else if (change.action === "removeMember") {
+    if (!change.memberNpub?.trim().startsWith("npub1")) {
+      throw new Error("Enter an npub (starts with npub1)");
+    }
+    const hex = npubToHex(change.memberNpub.trim());
+    if (!config.council.includes(hex)) throw new Error("This member is not part of the organization");
+    if (config.council.length - 1 < 1) throw new Error("The organization needs at least one member");
+    // Count how many vault keys leave with them (their published key + any
+    // explicitly stripped out-of-band key) and keep the vault spendable.
+    const theirKey = state.members.find((m) => m.pubkey === hex)?.vaultXOnly?.toLowerCase();
+    const extra = change.removeXOnly?.trim().toLowerCase();
+    const leaving = new Set([theirKey, extra].filter((k): k is string => Boolean(k)));
+    const remaining = config.vaultSigners.filter((k) => !leaving.has(k)).length;
+    if (remaining < config.threshold) {
+      throw new Error(`Removing this member would leave fewer vault signers than the ${config.threshold}-of-N threshold`);
+    }
+  } else if (change.action === "setPermissions") {
+    const p = change.permissions ?? {};
+    if (!p.feedPost && !p.createProposal) throw new Error("Choose at least one permission to change");
+    for (const value of [p.feedPost, p.createProposal]) {
+      if (value && value !== "admins" && value !== "members") {
+        throw new Error("Permissions must be either \"admins\" or \"members\"");
+      }
+    }
+    const current = effectivePermissions();
+    if (
+      (p.feedPost == null || p.feedPost === current.feedPost) &&
+      (p.createProposal == null || p.createProposal === current.createProposal)
+    ) {
+      throw new Error("These permissions are already in effect");
+    }
+  } else {
+    throw new Error("Unknown config change");
+  }
+}
+
+/**
+ * Propose a configuration change as a voted proposal. It applies automatically
+ * once it gathers the current threshold of yes votes (an administrator must
+ * have the treasury unlocked so the org key can sign the new config).
+ */
+export async function proposeConfigChange(change: ConfigChangeInput, title?: string): Promise<void> {
+  validateConfigChange(change);
+  await createProposal({
+    type: "config",
+    title: title ?? configChangeTitle(change),
+    body: configChangeSummary(change),
+    configChange: change,
+  });
+}
+
+/** True when a passed config proposal can still be applied to the current config. */
+export function canExecuteConfigChange(proposal: ProposalView): boolean {
+  if (proposal.type !== "config" || !proposal.passed || proposal.executed || !proposal.configChange) {
+    return false;
+  }
+  const config = state.config;
+  if (!config) return false;
+  const change = proposal.configChange;
+  if (change.action === "setThreshold") {
+    return (
+      change.threshold != null &&
+      Number.isInteger(change.threshold) &&
+      change.threshold >= 1 &&
+      change.threshold <= config.vaultSigners.length &&
+      change.threshold !== config.threshold
+    );
+  }
+  if (change.action === "addSigner") {
+    const key = change.xOnly?.trim().toLowerCase();
+    return Boolean(key && X_ONLY_KEY_RE.test(key) && !config.vaultSigners.includes(key));
+  }
+  if (change.action === "removeSigner") {
+    const key = change.xOnly?.trim().toLowerCase();
+    return Boolean(
+      key && config.vaultSigners.includes(key) && config.vaultSigners.length - 1 >= config.threshold,
+    );
+  }
+  if (change.action === "addMember") {
+    try {
+      const hex = change.memberNpub ? npubToHex(change.memberNpub.trim()) : "";
+      return Boolean(hex) && !config.council.includes(hex);
+    } catch {
+      return false;
+    }
+  }
+  if (change.action === "removeMember") {
+    try {
+      const hex = change.memberNpub ? npubToHex(change.memberNpub.trim()) : "";
+      if (!hex || !config.council.includes(hex)) return false;
+      if (config.council.length - 1 < 1) return false;
+      const theirKey = state.members.find((m) => m.pubkey === hex)?.vaultXOnly?.toLowerCase();
+      const extra = change.removeXOnly?.trim().toLowerCase();
+      const leaving = new Set([theirKey, extra].filter((k): k is string => Boolean(k)));
+      return config.vaultSigners.filter((k) => !leaving.has(k)).length >= config.threshold;
+    } catch {
+      return false;
+    }
+  }
+  if (change.action === "setPermissions") {
+    const p = change.permissions ?? {};
+    if (!p.feedPost && !p.createProposal) return false;
+    const current = effectivePermissions();
+    const feedChanged = p.feedPost != null && p.feedPost !== current.feedPost;
+    const proposalChanged = p.createProposal != null && p.createProposal !== current.createProposal;
+    return feedChanged || proposalChanged;
+  }
+  return false;
+}
+
+/**
+ * Apply a passed config proposal: publish the new config with the org key
+ * (and the member's seed share for addMember), then record the execution so
+ * the change can never be applied twice.
+ */
+export async function executeConfigChange(proposal: ProposalView): Promise<string> {
+  requireAdmin();
+  const { orgSk, orgPubkey } = requireSeed();
+  const config = state.config;
+  if (!config) throw new Error("Org config not loaded yet");
+  if (proposal.type !== "config" || !proposal.passed) throw new Error("This proposal has not passed");
+  const change = proposal.configChange;
+  if (!change) throw new Error("This proposal carries no config change");
+  validateConfigChange(change); // re-checked against the CURRENT config
+
+  const addr = orgAddress(orgPubkey);
+  if (change.action === "addMember") {
+    await addMemberInternal(
+      npubToHex(change.memberNpub!.trim()),
+      change.memberXOnly?.trim().toLowerCase() || undefined,
+    );
+  } else if (change.action === "addSigner") {
+    const key = change.xOnly!.trim().toLowerCase();
+    const updated: OrgConfig = { ...config, vaultSigners: [...config.vaultSigners, key] };
+    await publishOrgConfig(updated, orgSk, addr, config);
+  } else if (change.action === "removeSigner") {
+    const key = change.xOnly!.trim().toLowerCase();
+    const updated: OrgConfig = {
+      ...config,
+      vaultSigners: config.vaultSigners.filter((k) => k !== key),
+    };
+    await publishOrgConfig(updated, orgSk, addr, config);
+  } else if (change.action === "removeMember") {
+    const hex = npubToHex(change.memberNpub!.trim());
+    // Strip their published vault key (if any) plus any explicitly named
+    // out-of-band key, so a removed member keeps no vault spend authority.
+    const theirKey = state.members.find((m) => m.pubkey === hex)?.vaultXOnly?.toLowerCase();
+    const extra = change.removeXOnly?.trim().toLowerCase();
+    const leaving = new Set([theirKey, extra].filter((k): k is string => Boolean(k)));
+    const updated: OrgConfig = {
+      ...config,
+      council: config.council.filter((p) => p !== hex),
+      vaultSigners: config.vaultSigners.filter((k) => !leaving.has(k)),
+    };
+    await publishOrgConfig(updated, orgSk, addr, config);
+  } else if (change.action === "setPermissions") {
+    const updated: OrgConfig = {
+      ...config,
+      permissions: {
+        ...effectivePermissions(),
+        ...change.permissions,
+      },
+    };
+    await publishOrgConfig(updated, orgSk, addr, config);
+  } else {
+    const updated: OrgConfig = { ...config, threshold: change.threshold! };
+    await publishOrgConfig(updated, orgSk, addr, config);
+  }
+
+  const ev = await signAsMe({
+    kind: Kind.Execution,
+    created_at: now(),
+    tags: [["d", proposal.id], ["a", addr], ["e", proposal.id]],
+    content: JSON.stringify({ txid: `config:${change.action}`, proposalId: proposal.id, method: "config" }),
+  });
+  await publish(ev);
+  ingest(ev);
+  return configChangeSummary(change);
 }
 
 export async function createProposal(input: ProposalInput): Promise<void> {
   const orgPubkey = state.orgPubkey;
   if (!orgPubkey) throw new Error("No active org");
   requireMember();
+  if (!canCreateProposal()) {
+    throw new Error("Creating proposals is restricted to administrators");
+  }
   const encrypted = await encryptedGovernancePayload(input);
   const ev = await signAsMe({
     kind: Kind.Proposal,
@@ -1269,7 +1833,9 @@ export async function recordPaymentExecution(
 export async function publishFeedPost(text: string): Promise<void> {
   const orgPubkey = state.orgPubkey;
   if (!orgPubkey) throw new Error("No active org");
-  requireAdmin();
+  if (!canPublishFeed()) {
+    throw new Error("Posting to the org feed is restricted to administrators");
+  }
   const ev = await signAsMe({
     kind: 1,
     created_at: now(),
@@ -1334,6 +1900,8 @@ export async function cosignVaultSpend(proposal: ProposalView): Promise<void> {
   requireAdmin();
   requireExecutableSpend(proposal);
   await requireVaultSigner();
+  const vault = state.vault;
+  if (!vault) throw new Error("Vault is not complete yet");
   const events = await query({
     kinds: [Kind.PsbtCosign],
     "#e": [proposal.id],
@@ -1343,6 +1911,12 @@ export async function cosignVaultSpend(proposal: ProposalView): Promise<void> {
   events.sort((a, b) => b.created_at - a.created_at);
   const base = parseJsonContent<{ psbt: string }>(events[0])?.psbt;
   if (!base) throw new Error("Invalid PSBT event");
+  // Never sign blind: the PSBT must pay exactly what the proposal approved.
+  verifyVaultSpendPsbt(base, {
+    vault,
+    recipientAddress: proposal.onchainAddress!,
+    amountSats: BigInt(proposal.amountSats!),
+  });
   const signed = signPsbt(base, await getVaultSignerSecret());
   const ev = await signAsMe({
     kind: Kind.PsbtCosign,
@@ -1357,9 +1931,140 @@ export async function cosignVaultSpend(proposal: ProposalView): Promise<void> {
   await publish(ev);
 }
 
+/**
+ * Create, co-sign, or execute the migration of a retired vault's balance into
+ * the current vault. Stage-aware and idempotent, like the proposal vault flow:
+ * the first admin click builds and signs the sweep, further clicks co-sign,
+ * and once the OLD threshold of signatures is collected the transaction is
+ * broadcast. Every PSBT is verified to pay only the current vault address, so
+ * a migration can never redirect funds out of multisig custody.
+ */
+export async function advanceVaultMigration(retiredAddress: string): Promise<string> {
+  requireAdmin();
+  const config = state.config;
+  const currentVault = state.vault;
+  if (!config || !currentVault) throw new Error("Current vault is not ready yet");
+  const retired = (config.retiredVaults ?? []).find((r) => r.address === retiredAddress);
+  if (!retired) throw new Error("Unknown retired vault");
+  if (retired.address === currentVault.address) throw new Error("Already the current vault");
+  const orgPubkey = state.orgPubkey!;
+  const addr = orgAddress(orgPubkey);
+  const migrationId = `migration:${retired.address}`;
+
+  const executed = await query({ kinds: [Kind.Execution], "#e": [migrationId], limit: 1 });
+  if (executed.length) throw new Error("This vault migration has already been broadcast");
+
+  const oldVault = buildVault(retired.threshold, retired.signers);
+
+  // Gather existing contributions, keep only valid ones, group by unsigned tx.
+  const events = await query({ kinds: [Kind.PsbtCosign], "#e": [migrationId], limit: 200 });
+  const groups = new Map<string, { psbt: string; sigs: number; createdAt: number }[]>();
+  for (const ev of events) {
+    const psbt = parseJsonContent<{ psbt: string }>(ev)?.psbt;
+    if (!psbt) continue;
+    try {
+      verifyMigrationPsbt(psbt, oldVault, currentVault.address);
+    } catch {
+      continue; // ignore rogue or stale contributions
+    }
+    const tx = loadPsbt(psbt);
+    const list = groups.get(tx.id) ?? [];
+    list.push({ psbt, sigs: countTapScriptSigs(tx), createdAt: ev.created_at });
+    groups.set(tx.id, list);
+  }
+
+  let bestTxid: string | null = null;
+  let bestSigs = 0;
+  for (const [txid, list] of groups) {
+    const maxSigs = Math.max(...list.map((item) => item.sigs));
+    if (maxSigs > bestSigs) {
+      bestSigs = maxSigs;
+      bestTxid = txid;
+    }
+  }
+
+  if (!bestTxid) {
+    // Stage 1: no migration PSBT yet — build the sweep and sign it.
+    const utxos = await fetchUtxos(retired.address);
+    if (!utxos.length) throw new Error("The retired vault has no funds to migrate");
+    const built = buildVaultSpend({
+      vault: oldVault,
+      utxos,
+      recipientAddress: currentVault.address,
+      amountSats: 0n,
+      feeRate: await fetchRecommendedFeeRate(),
+      sweepAll: true,
+    });
+    const signed = signPsbt(built.psbtBase64, await getVaultSignerSecret());
+    const ev = await signAsMe({
+      kind: Kind.PsbtCosign,
+      created_at: now(),
+      tags: [["d", migrationId], ["a", addr], ["e", migrationId]],
+      content: JSON.stringify({ psbt: signed, txid: built.txid, migration: retired.address }),
+    });
+    await publish(ev);
+    ingest(ev);
+    const sigs = countTapScriptSigs(loadPsbt(signed));
+    if (sigs >= retired.threshold) return advanceVaultMigration(retiredAddress);
+    return `Migration PSBT published — waiting for co-signatures (${sigs}/${retired.threshold})`;
+  }
+
+  const list = groups.get(bestTxid)!;
+  const base = list.sort((a, b) => b.createdAt - a.createdAt)[0].psbt;
+
+  // Stage 2: co-sign if this member hasn't contributed yet.
+  if (bestSigs < retired.threshold) {
+    const myXOnly = await myVaultXOnly();
+    const mine = list.some((item) => psbtHasSigFrom(item.psbt, myXOnly));
+    if (!mine) {
+      const signed = signPsbt(base, await getVaultSignerSecret());
+      const ev = await signAsMe({
+        kind: Kind.PsbtCosign,
+        created_at: now(),
+        tags: [["d", migrationId], ["a", addr], ["e", migrationId]],
+        content: JSON.stringify({ psbt: signed, txid: bestTxid, migration: retired.address }),
+      });
+      await publish(ev);
+      ingest(ev);
+      list.push({ psbt: signed, sigs: countTapScriptSigs(loadPsbt(signed)), createdAt: now() });
+      bestSigs = Math.max(bestSigs, list[list.length - 1].sigs);
+      if (bestSigs < retired.threshold) {
+        return `Co-signature published — waiting for the rest (${bestSigs}/${retired.threshold})`;
+      }
+    }
+  }
+
+  // Stage 3: enough old-threshold signatures — combine, broadcast, record.
+  const combined = combinePsbts(list.map((item) => item.psbt));
+  const sigs = countTapScriptSigs(combined);
+  if (sigs < retired.threshold) {
+    return `Waiting for co-signatures (${sigs}/${retired.threshold})`;
+  }
+  const rawHex = finalizeAndExtract(combined);
+  const txid = await broadcastTx(rawHex);
+  const ev = await signAsMe({
+    kind: Kind.Execution,
+    created_at: now(),
+    tags: [["d", migrationId], ["a", addr], ["e", migrationId]],
+    content: JSON.stringify({ txid, migration: retired.address, method: "vault" }),
+  });
+  await publish(ev);
+  ingest(ev);
+  return `Migration broadcast · ${txid.slice(0, 16)}…`;
+}
+
+/** True when the PSBT already carries a taproot signature from this x-only key. */
+function psbtHasSigFrom(psbtBase64: string, xOnly: string): boolean {
+  const tx = loadPsbt(psbtBase64);
+  for (let i = 0; i < tx.inputsLength; i++) {
+    const sigs = tx.getInput(i).tapScriptSig ?? [];
+    if (sigs.some((entry) => toHex(entry[0].pubKey) === xOnly)) return true;
+  }
+  return false;
+}
+
 /** Step 3: combine all collected signatures, broadcast, and record execution. */
-export async function executeVaultSpend(proposal: ProposalView): Promise<string> {
-  const orgPubkey = state.orgPubkey;
+export async function executeVaultSpend(proposal: ProposalView): Promise<string> {  const orgPubkey = state.orgPubkey;
   if (!orgPubkey) throw new Error("No active org");
   const config = state.config;
   const vault = state.vault;
@@ -1377,9 +2082,28 @@ export async function executeVaultSpend(proposal: ProposalView): Promise<string>
     const existing = byAuthor.get(ev.pubkey);
     if (!existing || existing.created_at < ev.created_at) byAuthor.set(ev.pubkey, ev);
   }
-  const psbts = [...byAuthor.values()]
-    .map((ev) => parseJsonContent<{ psbt: string }>(ev)?.psbt)
-    .filter((p): p is string => Boolean(p));
+
+  // Every contribution must pay exactly what the proposal approved — a rogue
+  // PSBT (e.g. redirecting funds to the initiator) is rejected, not combined.
+  const expectation = {
+    vault,
+    recipientAddress: proposal.onchainAddress!,
+    amountSats: BigInt(proposal.amountSats!),
+  };
+  const psbts: string[] = [];
+  for (const [author, ev] of byAuthor) {
+    const psbt = parseJsonContent<{ psbt: string }>(ev)?.psbt;
+    if (!psbt) continue;
+    try {
+      verifyVaultSpendPsbt(psbt, expectation);
+    } catch (error) {
+      throw new Error(
+        `Rejecting PSBT from ${shortNpub(author)}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    psbts.push(psbt);
+  }
+  if (!psbts.length) throw new Error("No valid PSBTs found for this proposal");
 
   const combined = combinePsbts(psbts);
   const sigs = countTapScriptSigs(combined);

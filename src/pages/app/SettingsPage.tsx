@@ -2,9 +2,9 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import { Link } from "react-router-dom";
-import { Shield, Radio, Key, Globe2, Trash2, Plus, Check, Copy, Bitcoin, Zap, FileWarning, LogOut, UserRound, Code2, type LucideIcon } from "lucide-react";
+import { Shield, Radio, Key, Globe2, Trash2, Plus, Check, Copy, Bitcoin, Zap, LogOut, UserRound, Code2, type LucideIcon } from "lucide-react";
 import { useAuth } from "../../lib/auth";
-import { lockTreasury, npubToHex, shortNpub, treasurySeed, useOrg } from "../../lib/org";
+import { lockTreasury, npubToHex, shortNpub, useOrg } from "../../lib/org";
 import { profileLabel, profileSubtitle, useProfile } from "../../lib/profile";
 import { logOut } from "../../lib/session";
 import { setSettings, useSettings, DEFAULT_RELAYS, type SparkNetwork } from "../../lib/settings";
@@ -37,11 +37,8 @@ export function SettingsPage() {
   const [orgNpub, setOrgNpub] = useState(settings.activeOrgNpub ?? "");
   const [newRelay, setNewRelay] = useState("");
   const [explorer, setExplorer] = useState(settings.explorerApiBase ?? "");
-  const [showSeed, setShowSeed] = useState(false);
   const [showMySeed, setShowMySeed] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
-
-  const seed = treasurySeed();
 
   const copy = (text: string, key: string) => {
     navigator.clipboard?.writeText(text);
@@ -276,7 +273,7 @@ export function SettingsPage() {
         </div>
       </Section>
 
-      <Section icon={Key} title="Keys & backups" desc="Your key and the org treasury seed. Handle with care.">
+      <Section icon={Key} title="Keys & backups" desc="Your personal key backup. The org seed is never shown or exported.">
         <div className="rounded-md border border-border bg-bg-elev-2/40 p-3 space-y-3">
           <div className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground-2">
             Your key · {auth?.method ?? "—"}
@@ -312,44 +309,11 @@ export function SettingsPage() {
           <div className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground-2">
             Org treasury seed
           </div>
-          {seed ? (
-            <>
-              <button onClick={() => setShowSeed((s) => !s)} className="text-xs text-primary hover:underline">
-                {showSeed ? "hide" : "reveal"} org seed
-              </button>
-              {showSeed && (
-                <div className="rounded-md border border-[var(--yellow)]/40 bg-[var(--yellow)]/5 p-3 space-y-2">
-                  <div className="font-mono text-xs leading-relaxed break-all select-all">{seed}</div>
-                  <div className="flex items-center gap-3">
-                    <button onClick={() => copy(seed, "orgseed")} className="text-xs text-primary hover:underline flex items-center gap-1">
-                      {copied === "orgseed" ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />} Copy
-                    </button>
-                    <button
-                      onClick={() => {
-                        const blob = new Blob([seed], { type: "text/plain" });
-                        const a = document.createElement("a");
-                        a.href = URL.createObjectURL(blob);
-                        a.download = "bitmoot-org-seed.txt";
-                        a.click();
-                        URL.revokeObjectURL(a.href);
-                      }}
-                      className="text-xs text-primary hover:underline"
-                    >
-                      Download
-                    </button>
-                  </div>
-                  <div className="flex items-start gap-2 text-[11px] text-[var(--yellow)]">
-                    <FileWarning className="h-3.5 w-3.5 shrink-0 mt-px" />
-                    These 24 words control the org treasury. Store offline.
-                  </div>
-                </div>
-              )}
-            </>
-          ) : (
-            <div className="text-[11px] text-muted-foreground-2">
-              Treasury locked — unlock it on the treasury page to reveal the org seed.
-            </div>
-          )}
+          <div className="text-[11px] leading-relaxed text-muted-foreground-2">
+            The org seed is never displayed, copied or exported in plain text. Each administrator
+            holds an encrypted share on Nostr, and the seed is only decrypted in memory — after
+            unlocking the treasury — to sign org events and operate the wallet.
+          </div>
         </div>
       </Section>
 

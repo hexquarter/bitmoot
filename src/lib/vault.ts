@@ -1,4 +1,4 @@
-import { p2tr, p2tr_ms, Transaction, NETWORK } from "@scure/btc-signer";
+import { p2tr, p2tr_ms, Transaction, NETWORK, Address, OutScript } from "@scure/btc-signer";
 import { tapLeafHash } from "@scure/btc-signer/payment.js";
 import { PSBTCombine } from "@scure/btc-signer/transaction.js";
 import type { TransactionInput } from "@scure/btc-signer/psbt.js";
@@ -158,6 +158,8 @@ export interface SpendRequest {
   recipientAddress: string;
   amountSats: bigint;
   feeRate: number;
+  /** Sweep the full input value minus fees; `amountSats` is ignored. */
+  sweepAll?: boolean;
 }
 
 export interface BuiltSpend {
@@ -189,7 +191,19 @@ export function buildVaultSpend(req: SpendRequest): BuiltSpend {
     return { tx, changeIdx };
   };
 
-  const { tx, changeIdx } = build(true);
+  const withChange = !req.sweepAll;
+  const { tx, changeIdx } = build(withChange);
+
+  if (req.sweepAll) {
+    // No change output: the recipient takes everything minus the fee.
+    const total = req.utxos.reduce((s, u) => s + BigInt(u.value), 0n);
+    const fee = BigInt(Math.ceil(estimateVsize(tx, req.vault) * req.feeRate));
+    const recipientAmount = total - fee;
+    if (recipientAmount < DUST) throw new Error("Balance too small to cover fees");
+    tx.updateOutput(0, { amount: recipientAmount });
+    return { tx, psbtBase64: toBase64(tx.toPSBT()), fee, change: 0n, txid: tx.id };
+  }
+
   const fee = BigInt(Math.ceil(estimateVsize(tx, req.vault) * req.feeRate));
   const change = total - req.amountSats - fee;
   if (change < DUST) {
@@ -212,6 +226,79 @@ export function buildVaultSpend(req: SpendRequest): BuiltSpend {
 /** Load a PSBT from base64. */
 export function loadPsbt(psbtBase64: string): Transaction {
   return Transaction.fromPSBT(fromBase64(psbtBase64));
+}
+
+/**
+ * Verify a vault-migration PSBT: every input must spend the retired vault,
+ * and the single output must pay the CURRENT vault address. Migration can
+ * never redirect funds anywhere but the new multisig.
+ */
+export function verifyMigrationPsbt(psbtBase64: string, oldVault: VaultInfo, currentAddress: string): void {
+  const tx = loadPsbt(psbtBase64);
+  if (tx.inputsLength === 0) throw new Error("Migration PSBT has no inputs");
+  const oldScript = hexToBytes(oldVault.scriptHex);
+  for (let i = 0; i < tx.inputsLength; i++) {
+    const witness = tx.getInput(i).witnessUtxo;
+    if (!witness || !sameBytes(witness.script, oldScript)) {
+      throw new Error("Migration PSBT spends an input outside the retired vault");
+    }
+  }
+  if (tx.outputsLength !== 1) throw new Error("Migration PSBT must have exactly one output");
+  const out = tx.getOutput(0);
+  const currentScript = OutScript.encode(Address(networkParams()).decode(currentAddress));
+  if (!sameBytes(out.script ?? new Uint8Array(), currentScript)) {
+    throw new Error("Migration PSBT does not pay the current vault address");
+  }
+}
+
+/** What an approved proposal authorizes the vault to pay. */
+export interface SpendExpectation {
+  vault: VaultInfo;
+  recipientAddress: string;
+  amountSats: bigint;
+}
+
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+/**
+ * Verify a vault-spend PSBT pays exactly what the passed proposal approved:
+ * one output to the approved recipient with the approved amount, any other
+ * output back to the vault (change), and every input drawn from the vault.
+ * Co-signers must run this before signing — it is what makes co-signing a
+ * proposal-bound act instead of a blind signature.
+ */
+export function verifyVaultSpendPsbt(psbtBase64: string, exp: SpendExpectation): void {
+  const tx = loadPsbt(psbtBase64);
+  if (tx.inputsLength === 0 || tx.outputsLength === 0) throw new Error("PSBT is empty");
+
+  const vaultScript = hexToBytes(exp.vault.scriptHex);
+  // Address() decodes to a descriptor ({type:'tr',pubkey}); OutScript renders it to output script bytes.
+  const recipientScript = OutScript.encode(Address(networkParams()).decode(exp.recipientAddress));
+  let recipientOutputs = 0;
+  for (let i = 0; i < tx.outputsLength; i++) {
+    const out = tx.getOutput(i);
+    const script = out.script ?? new Uint8Array();
+    if (sameBytes(script, recipientScript)) {
+      if (out.amount !== exp.amountSats) {
+        throw new Error("Recipient amount does not match the approved proposal");
+      }
+      recipientOutputs++;
+    } else if (!sameBytes(script, vaultScript)) {
+      throw new Error("PSBT pays an address outside the approved proposal");
+    }
+  }
+  if (recipientOutputs !== 1) throw new Error("PSBT does not pay the approved recipient");
+
+  for (let i = 0; i < tx.inputsLength; i++) {
+    const witness = tx.getInput(i).witnessUtxo;
+    if (!witness || !sameBytes(witness.script, vaultScript)) {
+      throw new Error("PSBT spends an input outside the org vault");
+    }
+  }
 }
 
 /** Serialize a transaction PSBT as base64. */

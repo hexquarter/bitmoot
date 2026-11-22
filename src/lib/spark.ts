@@ -1,5 +1,4 @@
 import type { BreezSdk, OnchainConfirmationSpeed } from "@breeztech/breez-sdk-spark/web";
-import { orgNostrKeys } from "./keys";
 import { isOrgAdmin } from "./org";
 import { getSettings } from "./settings";
 
@@ -61,19 +60,22 @@ export async function disconnectOrgWallet(): Promise<void> {
   }
 }
 
-/** Connect (or return the cached) Breez wallet for the current org. */
-export async function connectOrgWallet(mnemonic: string): Promise<BreezSdk> {
+/**
+ * Connect (or return the cached) Breez wallet for the current org. The wallet
+ * is derived from its own seed — deliberately separate from the org identity
+ * seed — so it can be rotated without touching the org's npub or history.
+ */
+export async function connectOrgWallet(orgPubkey: string, walletSeed: string): Promise<BreezSdk> {
   const { network } = getSettings();
   const breezApiKey = import.meta.env.VITE_BREEZ_API_KEY?.trim();
-  const key = `${network}:${mnemonic}`;
+  const key = `${network}:${orgPubkey}:${walletSeed}`;
   if (cachedWallet && cachedKey === key) return cachedWallet;
 
   const breez = await loadBreez();
   const config = breez.defaultConfig(network === "MAINNET" ? "mainnet" : "regtest");
   if (breezApiKey) config.apiKey = breezApiKey;
 
-  const orgPubkey = orgNostrKeys(mnemonic).pubkey;
-  const builder = breez.SdkBuilder.new(config, { type: "mnemonic", mnemonic }).withAccountNumber(
+  const builder = breez.SdkBuilder.new(config, { type: "mnemonic", mnemonic: walletSeed }).withAccountNumber(
     orgAccountNumber(network),
   );
   const withStorage = await builder.withDefaultStorage(`bitmoot-${orgPubkey.slice(0, 16)}`);
@@ -106,6 +108,43 @@ export async function getOrgStaticDepositAddress(wallet: BreezSdk): Promise<stri
     paymentMethod: { type: "bitcoinAddress", newAddress: false },
   });
   return res.paymentRequest;
+}
+
+export interface OrgLightningAddress {
+  address: string;
+  username: string;
+}
+
+/** The org wallet's Lightning address (LUD-16, interoperable with any wallet), if registered. */
+export async function getOrgLightningAddress(wallet: BreezSdk): Promise<OrgLightningAddress | null> {
+  const info = await wallet.getLightningAddress();
+  if (!info) return null;
+  return { address: info.lightningAddress, username: info.username };
+}
+
+/** Suggest a username for the org's Lightning address from the org name. */
+export function suggestLightningUsername(orgName: string): string {
+  const slug = orgName
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 24);
+  return slug || "treasury";
+}
+
+/** Register a Lightning address for the org wallet. Admin-only. */
+export async function registerOrgLightningAddress(
+  wallet: BreezSdk,
+  username: string,
+): Promise<OrgLightningAddress> {
+  requireWalletAdmin();
+  const clean = username.toLowerCase().replace(/[^a-z0-9-]+/g, "").slice(0, 32);
+  if (!clean) throw new Error("Choose a username for the lightning address");
+  const info = await wallet.registerLightningAddress({
+    username: clean,
+    description: "BitMoot treasury",
+  });
+  return { address: info.lightningAddress, username: info.username };
 }
 
 export async function createOrgLightningInvoice(
@@ -177,6 +216,24 @@ export async function sendUsdb(
     paymentRequest: { type: "input", input: receiverSparkAddress.trim() },
     tokenIdentifier: USDB_TOKEN_ID,
     amount: tokenAmount,
+  });
+  const result = await wallet.sendPayment({
+    prepareResponse: prepared,
+    options: { type: "sparkAddress" },
+  });
+  return result.payment.id;
+}
+
+/** Send sats to another Spark wallet (used by treasury rotation). */
+export async function sendSatsToSparkAddress(
+  wallet: BreezSdk,
+  receiverSparkAddress: string,
+  amountSats: number,
+): Promise<string> {
+  requireWalletAdmin();
+  const prepared = await wallet.prepareSendPayment({
+    paymentRequest: { type: "input", input: receiverSparkAddress.trim() },
+    amount: BigInt(Math.round(amountSats)),
   });
   const result = await wallet.sendPayment({
     prepareResponse: prepared,

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
-import { ArrowRight, Building2, Check, Copy, Plus, Send, Users, Vote } from "lucide-react";
+import { ArrowRight, Building2, Plus, Send, Users, Vote } from "lucide-react";
 import { useAuth } from "../../lib/auth";
 import { createOrg, joinOrg, npubToHex, shortNpub, useOrg } from "../../lib/org";
 import { switchOrg, useMyOrgs } from "../../lib/orgs";
@@ -17,35 +17,29 @@ const relationLabel = {
   known: "Known",
 } as const;
 
-/** Recovery words stay on screen until the user explicitly continues. */
-function CreatedSeedCard({ seed, onDone }: { seed: string; onDone: () => void }) {
-  const [copied, setCopied] = useState(false);
+/**
+ * Post-creation confirmation. The treasury seed was generated and encrypted
+ * into one share per admin (kind 30079) — it is never displayed, copied or
+ * exported in plain text. Admins decrypt their share in memory only to sign.
+ */
+function CreatedOrgCard({ onDone }: { onDone: () => void }) {
   return (
     <div className="max-w-2xl space-y-4">
       <Card className="border-primary/40 bg-primary-dim p-6">
         <div className="font-mono text-[11px] uppercase tracking-wider text-primary">
-          SAVE THESE WORDS OFFLINE
+          TREASURY SECURED
         </div>
-        <h2 className="mt-2 text-xl font-serif italic">Your treasury recovery words</h2>
+        <h2 className="mt-2 text-xl font-serif italic">Your organization is live</h2>
         <p className="mt-2 text-sm text-muted-foreground">
-          These 24 words control the organization's wallet. Write them down and keep them somewhere safe.
-          This is the only time they appear in plain text.
+          The treasury seed was generated and encrypted into one share per administrator.
+          It is never shown or exported in plain text — each admin decrypts their share in
+          memory only to sign org events and operate the wallet.
         </p>
-        <div className="mt-4 select-all rounded-md border border-border bg-background p-4 font-mono text-sm leading-relaxed">
-          {seed}
-        </div>
+        <p className="mt-2 text-sm text-muted-foreground">
+          Your wallet is already open for this session. Other admins open it from the
+          treasury page, which decrypts their own share from the relays.
+        </p>
         <div className="mt-4 flex flex-wrap items-center gap-3">
-          <Button
-            variant="primary"
-            onClick={() => {
-              void navigator.clipboard?.writeText(seed);
-              setCopied(true);
-              setTimeout(() => setCopied(false), 2000);
-            }}
-          >
-            {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-            {copied ? "Copied" : "Copy words"}
-          </Button>
           <Link
             to="/app/treasury"
             onClick={onDone}
@@ -54,7 +48,7 @@ function CreatedSeedCard({ seed, onDone }: { seed: string; onDone: () => void })
             Continue to treasury <ArrowRight className="h-3.5 w-3.5" />
           </Link>
           <button type="button" onClick={onDone} className="text-xs text-muted-foreground hover:text-foreground">
-            I saved them — go to org home
+            Go to org home
           </button>
         </div>
       </Card>
@@ -63,7 +57,7 @@ function CreatedSeedCard({ seed, onDone }: { seed: string; onDone: () => void })
 }
 
 /** First-run onboarding and the list of orgs found for this Nostr identity. */
-function OrgSetup({ onCreated }: { onCreated: (seed: string) => void }) {
+function OrgSetup({ onCreated }: { onCreated: () => void }) {
   const signer = useAuth().signer!;
   const profile = useProfile(signer.pubkey);
   const { orgs, loading, reload } = useMyOrgs();
@@ -83,15 +77,15 @@ function OrgSetup({ onCreated }: { onCreated: (seed: string) => void }) {
     try {
       const npubs = council.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
       for (const npub of npubs) npubToHex(npub);
-      const created = await createOrg({
+      await createOrg({
         name: name.trim(),
         description: description.trim(),
         threshold,
         councilNpubs: npubs,
       });
-      onCreated(created.seed);
+      onCreated();
       reload();
-      toast.success("Organization created — save your recovery words");
+      toast.success("Organization created — treasury seed encrypted into admin shares");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
     } finally {
@@ -270,11 +264,11 @@ function OrgSetup({ onCreated }: { onCreated: (seed: string) => void }) {
 export function AppIndexPage() {
   const org = useOrg();
   const signer = useAuth().signer;
-  const [newSeed, setNewSeed] = useState<string | null>(null);
-  if (newSeed) return <CreatedSeedCard seed={newSeed} onDone={() => setNewSeed(null)} />;
+  const [created, setCreated] = useState(false);
+  if (created) return <CreatedOrgCard onDone={() => setCreated(false)} />;
 
   const hasOrgAccess = org.myRole === "admin" || org.myRole === "member";
-  if (!org.orgPubkey || !hasOrgAccess) return <OrgSetup onCreated={setNewSeed} />;
+  if (!org.orgPubkey || !hasOrgAccess) return <OrgSetup onCreated={() => setCreated(true)} />;
 
   const canManage = org.myRole === "admin";
   const needsMyVote = org.proposals.filter(

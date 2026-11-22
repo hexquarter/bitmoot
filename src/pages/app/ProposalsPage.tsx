@@ -9,9 +9,10 @@ import { useAuth } from "../../lib/auth";
 import { canPayDirectly, executeApprovedPayment } from "../../lib/autoPay";
 import { platformFeeDisplay } from "../../lib/fees";
 import {
-  castVote, createProposal, createVaultSpend, cosignVaultSpend, executeVaultSpend,
-  getProposalDebugDetails, listVaultSignatures, proposalPaymentMethod, shortNpub, useOrg,
-  type PaymentMethod, type ProposalDebugDetails, type ProposalView,
+  canExecuteConfigChange, castVote, configChangeSummary, createProposal, createVaultSpend, cosignVaultSpend,
+  executeConfigChange, executeVaultSpend, getProposalDebugDetails, listVaultSignatures, proposeConfigChange,
+  proposalPaymentMethod, shortNpub, useOrg,
+  type ConfigChangeInput, type ContentPermission, type PaymentMethod, type ProposalDebugDetails, type ProposalView,
   type VaultSignatureView, type VoteChoice,
 } from "../../lib/org";
 import { parseJsonContent, type NostrEvent } from "../../lib/nostr";
@@ -56,13 +57,24 @@ function paymentSummary(proposal: ProposalView): string | null {
 type Filter = "all" | "open" | "passed" | "executed";
 
 function NewProposal({ onDone }: { onDone: () => void }) {
+  const org = useOrg();
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
-  const [type, setType] = useState<"payment" | "general">("payment");
+  const [type, setType] = useState<"payment" | "general" | "config">("payment");
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("lightning");
   const [amount, setAmount] = useState("");
   const [recipient, setRecipient] = useState("");
   const [busy, setBusy] = useState(false);
+  // governance (config) change fields
+  const [action, setAction] = useState<ConfigChangeInput["action"]>("setThreshold");
+  const [threshold, setThreshold] = useState(String(org.config?.threshold ?? 2));
+  const [signerKey, setSignerKey] = useState("");
+  const [memberNpub, setMemberNpub] = useState("");
+  const [memberKey, setMemberKey] = useState("");
+  const [removeMemberNpub, setRemoveMemberNpub] = useState("");
+  const [removeKey, setRemoveKey] = useState("");
+  const [permFeedPost, setPermFeedPost] = useState<ContentPermission>((org.config?.permissions?.feedPost ?? "admins"));
+  const [permCreateProposal, setPermCreateProposal] = useState<ContentPermission>((org.config?.permissions?.createProposal ?? "members"));
 
   const recipientLabels: Record<PaymentMethod, string> = {
     lightning: "Lightning invoice",
@@ -75,7 +87,58 @@ function NewProposal({ onDone }: { onDone: () => void }) {
     onchain: "bc1…",
   };
 
+  const governanceCandidates = (() => {
+    // Vault keys not attributable to another member's published key — the ones
+    // that could belong to the member being removed.
+    const others = new Set(
+      org.members
+        .filter((m) => m.pubkey !== removeMemberNpub)
+        .map((m) => m.vaultXOnly)
+        .filter((k): k is string => Boolean(k)),
+    );
+    return (org.config?.vaultSigners ?? []).filter((k) => !others.has(k));
+  })();
+
   const submit = async () => {
+    if (type === "config") {
+      setBusy(true);
+      try {
+        const change: ConfigChangeInput =
+          action === "setThreshold"
+            ? { action, threshold: Number(threshold.replace(/[,\s]/g, "")) }
+            : action === "addSigner"
+              ? { action, xOnly: signerKey.trim() }
+              : action === "removeSigner"
+                ? { action, xOnly: signerKey.trim() }
+                : action === "addMember"
+                  ? {
+                      action,
+                      memberNpub: memberNpub.trim(),
+                      memberXOnly: memberKey.trim() || undefined,
+                    }
+                : action === "setPermissions"
+                  ? {
+                      action,
+                      permissions: {
+                        feedPost: permFeedPost,
+                        createProposal: permCreateProposal,
+                      },
+                    }
+                  : {
+                      action,
+                      memberNpub: removeMemberNpub.trim(),
+                      removeXOnly: removeKey || undefined,
+                    };
+        await proposeConfigChange(change);
+        toast.success("Governance proposal published to Nostr");
+        onDone();
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : String(e));
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
     if (!title.trim()) return toast.error("Give the proposal a title");
     if (type === "payment" && !recipient.trim()) return toast.error("Add the payment recipient");
     if (type === "payment" && paymentMethod !== "lightning" && !Number(amount)) {
@@ -122,14 +185,168 @@ function NewProposal({ onDone }: { onDone: () => void }) {
           className="w-full rounded-md border border-border bg-bg-elev-2/50 px-3 py-2 text-sm focus:outline-none focus:border-primary/60 transition resize-none" />
       </div>
       <div className="flex gap-2">
-        {(["payment", "general"] as const).map((t) => (
+        {(["payment", "general", "config"] as const).map((t) => (
           <button key={t} onClick={() => setType(t)}
             className={"h-9 px-4 rounded-md text-xs font-mono uppercase tracking-wider border transition " +
               (type === t ? "border-primary/50 bg-primary-dim text-primary" : "border-border text-muted-foreground hover:text-foreground")}>
-            {t}
+            {t === "config" ? "governance" : t}
           </button>
         ))}
       </div>
+      {type === "config" && (
+        <div className="space-y-4">
+          <div>
+            <label className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground">Change</label>
+            <div className="mt-1.5 flex flex-wrap gap-2">
+              {(
+                [
+                  ["setThreshold", "Change threshold"],
+                  ["addSigner", "Add signer"],
+                  ["removeSigner", "Remove signer"],
+                  ["addMember", "Add member"],
+                  ["removeMember", "Remove member"],
+                  ["setPermissions", "Permissions"],
+                ] as const
+              ).map(([a, label]) => (
+                <button key={a} onClick={() => setAction(a)}
+                  className={"h-9 px-3 rounded-md text-xs font-medium border transition " +
+                    (action === a
+                      ? "border-primary/60 bg-primary-dim text-primary"
+                      : "border-border text-muted-foreground hover:text-foreground hover:border-border-bright")}>
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {action === "setThreshold" && (
+            <div className="max-w-xs">
+              <label className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground">
+                New threshold (of {org.config?.vaultSigners.length ?? "N"} published signers)
+              </label>
+              <input value={threshold} onChange={(e) => setThreshold(e.target.value)} inputMode="numeric"
+                placeholder="2" className={inputCls + " font-mono mt-1.5"} />
+            </div>
+          )}
+
+          {(action === "addSigner" || action === "removeSigner") && (
+            <div className="max-w-2xl">
+              <label className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground">
+                {action === "addSigner" ? "Vault signer key to add (x-only, 64 hex)" : "Vault signer key to remove"}
+              </label>
+              {action === "addSigner" ? (
+                <input value={signerKey} onChange={(e) => setSignerKey(e.target.value)}
+                  placeholder="64 hex characters, no 02/03 prefix" className={inputCls + " font-mono mt-1.5"} />
+              ) : (
+                <select value={signerKey} onChange={(e) => setSignerKey(e.target.value)}
+                  className={inputCls + " font-mono mt-1.5"}>
+                  <option value="">Choose a signer key…</option>
+                  {(org.config?.vaultSigners ?? []).map((k) => (
+                    <option key={k} value={k}>{k.slice(0, 16)}…{k.slice(-8)}</option>
+                  ))}
+                </select>
+              )}
+            </div>
+          )}
+
+          {action === "addMember" && (
+            <div className="space-y-3 max-w-2xl">
+              <div>
+                <label className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground">Member npub</label>
+                <input value={memberNpub} onChange={(e) => setMemberNpub(e.target.value)} placeholder="npub1…"
+                  className={inputCls + " font-mono mt-1.5"} />
+              </div>
+              <div>
+                <label className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground">
+                  Optional: their vault signer key (if they sent it to you)
+                </label>
+                <input value={memberKey} onChange={(e) => setMemberKey(e.target.value)}
+                  placeholder="64 hex characters" className={inputCls + " font-mono mt-1.5"} />
+              </div>
+            </div>
+          )}
+
+          {action === "removeMember" && (
+            <div className="space-y-3 max-w-2xl">
+              <div>
+                <label className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground">Member to remove</label>
+                <select value={removeMemberNpub} onChange={(e) => { setRemoveMemberNpub(e.target.value); setRemoveKey(""); }}
+                  className={inputCls + " font-mono mt-1.5"}>
+                  <option value="">Choose a member…</option>
+                  {org.members.map((m) => (
+                    <option key={m.pubkey} value={m.pubkey}>{shortNpub(m.pubkey)}</option>
+                  ))}
+                </select>
+              </div>
+              {removeMemberNpub && governanceCandidates.length > 0 && (
+                <div>
+                  <label className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground">
+                    Also remove a vault signer key linked to them (optional)
+                  </label>
+                  <select value={removeKey} onChange={(e) => setRemoveKey(e.target.value)}
+                    className={inputCls + " font-mono mt-1.5"}>
+                    <option value="">— none —</option>
+                    {governanceCandidates.map((k) => (
+                      <option key={k} value={k}>{k.slice(0, 16)}…{k.slice(-8)}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              <p className="text-[11px] text-[var(--yellow)]">
+                Removing a member takes away their vote and vault key. It cannot revoke the encrypted seed share
+                already on relays — if the membership was compromised, rotate the wallet seed instead (treasury page).
+              </p>
+            </div>
+          )}
+
+          {action === "setPermissions" && (
+            <div className="space-y-3 max-w-xl">
+              <div>
+                <label className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground">
+                  Posting to the org feed
+                </label>
+                <select value={permFeedPost} onChange={(e) => setPermFeedPost(e.target.value as ContentPermission)}
+                  className={inputCls + " mt-1.5"}>
+                  <option value="admins">Administrators only</option>
+                  <option value="members">All members</option>
+                </select>
+              </div>
+              <div>
+                <label className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground">
+                  Creating proposals
+                </label>
+                <select value={permCreateProposal} onChange={(e) => setPermCreateProposal(e.target.value as ContentPermission)}
+                  className={inputCls + " mt-1.5"}>
+                  <option value="members">All members</option>
+                  <option value="admins">Administrators only</option>
+                </select>
+              </div>
+            </div>
+          )}
+
+          {action !== "removeMember" && (
+            <p className="text-[11px] text-muted-foreground-2">
+              Governance changes apply automatically when the proposal gathers the current threshold of yes-votes;
+              an administrator must have the treasury unlocked so the org key can sign the new config.
+              Threshold and signer changes derive a new vault address.
+            </p>
+          )}
+        </div>
+      )}
+      {type !== "config" && (
+        <>
+          <div>
+            <label className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground">Title</label>
+            <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Pay Lina for the mixing studio"
+              className={inputCls} />
+          </div>
+          <div>
+            <label className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground">Body</label>
+            <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={3} placeholder="Context for the council…"
+              className="w-full rounded-md border border-border bg-bg-elev-2/50 px-3 py-2 text-sm focus:outline-none focus:border-primary/60 transition resize-none" />
+          </div>
+        </>
+      )}
       {type === "payment" && (
         <div className="space-y-4">
           <div>
@@ -261,6 +478,31 @@ function MakePaymentButton({ proposal }: { proposal: ProposalView }) {
       className="h-9 px-3 rounded-md bg-[var(--green)]/15 border border-[var(--green)]/30 text-xs font-medium text-[var(--green)] hover:opacity-90 transition flex items-center gap-2 disabled:opacity-50"
     >
       <Send className="h-3.5 w-3.5" /> {busy ? "Sending…" : "Make the payment"}
+    </button>
+  );
+}
+
+/** Apply a passed configuration change (threshold / signer / member). */
+function ApplyConfigButton({ proposal }: { proposal: ProposalView }) {
+  const [busy, setBusy] = useState(false);
+  const apply = async () => {
+    setBusy(true);
+    try {
+      const summary = await executeConfigChange(proposal);
+      toast.success(`Change applied · ${summary}`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button
+      onClick={apply}
+      disabled={busy}
+      className="h-9 px-3 rounded-md bg-[var(--green)]/15 border border-[var(--green)]/30 text-xs font-medium text-[var(--green)] hover:opacity-90 transition flex items-center gap-2 disabled:opacity-50"
+    >
+      <Gavel className="h-3.5 w-3.5" /> {busy ? "Applying…" : "Apply change"}
     </button>
   );
 }
@@ -576,6 +818,19 @@ function ProposalReviewDialog({ proposal, onClose }: { proposal: ProposalView; o
             </div>
           )}
 
+          {proposal.type === "config" && proposal.configChange && (
+            <div className="rounded-md border border-primary/30 bg-primary-dim px-4 py-3">
+              <div className="flex items-center gap-2 text-sm font-medium text-primary">
+                <Gavel className="h-4 w-4" /> Configuration change
+              </div>
+              <div className="mt-1 text-sm">{configChangeSummary(proposal.configChange)}</div>
+              <div className="mt-1 text-[11px] text-muted-foreground">
+                When this passes with the current threshold of yes-votes, an administrator applies it with the org
+                key. Threshold and signer changes derive a new vault address.
+              </div>
+            </div>
+          )}
+
           <div className="grid gap-3 sm:grid-cols-3">
             <ReviewStat label="Yes votes" value={String(proposal.yesCount)} />
             <ReviewStat label="No votes" value={String(proposal.noCount)} />
@@ -633,13 +888,13 @@ function ProposalReviewDialog({ proposal, onClose }: { proposal: ProposalView; o
             </div>
           )}
 
-          {proposal.passed && !proposal.executed && proposal.type !== "payment" && (
+          {proposal.passed && !proposal.executed && proposal.type === "general" && (
             <div className="flex items-center gap-2 rounded-md border border-[var(--green)]/30 bg-[var(--green)]/10 px-4 py-3 text-sm">
               <CheckCircle2 className="h-4 w-4 text-[var(--green)]" /> Approved — no funds need to move.
             </div>
           )}
 
-          {proposal.executed && (
+          {proposal.executed && proposal.type !== "config" && (
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-[var(--blue)]/30 bg-[var(--blue)]/10 px-4 py-3">
               <div className="flex min-w-0 items-center gap-2 text-sm">
                 <CheckCircle2 className="h-4 w-4 text-[var(--blue)]" />
@@ -659,6 +914,17 @@ function ProposalReviewDialog({ proposal, onClose }: { proposal: ProposalView; o
                 >
                   <ExternalLink className="h-3 w-3" /> View transaction
                 </a>
+              )}
+            </div>
+          )}
+
+          {proposal.executed && proposal.type === "config" && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-[var(--blue)]/30 bg-[var(--blue)]/10 px-4 py-3">
+              <div className="flex items-center gap-2 text-sm">
+                <CheckCircle2 className="h-4 w-4 text-[var(--blue)]" /> Change applied
+              </div>
+              {proposal.configChange && (
+                <span className="text-[11px] text-muted-foreground">{configChangeSummary(proposal.configChange)}</span>
               )}
             </div>
           )}
@@ -846,6 +1112,7 @@ export function ProposalsPage() {
             const method = proposalPaymentMethod(p);
             const summary = paymentSummary(p);
             const isOnchainVault = method === "onchain" && Boolean(p.onchainAddress && p.amountSats);
+            const changeSummary = p.type === "config" && p.configChange ? configChangeSummary(p.configChange) : null;
             const yesPct = Math.min(100, (p.yesCount / Math.max(1, threshold)) * 100);
             return (
               <div key={p.id} className="px-5 py-4 grid grid-cols-1 md:grid-cols-12 gap-3 md:gap-4 items-center hover:bg-bg-elev-2/40 transition">
@@ -856,6 +1123,7 @@ export function ProposalsPage() {
                     <div className="text-[11px] text-muted-foreground mt-0.5">
                       by {shortNpub(p.author)} · {new Date(p.createdAt * 1000).toLocaleDateString()}
                       {summary && <span className="text-primary"> · {summary}</span>}
+                      {changeSummary && <span className="text-primary"> · {changeSummary}</span>}
                     </div>
                     {p.body && (
                       <div className="mt-1 line-clamp-2 text-[11px] text-muted-foreground-2">{p.body}</div>
@@ -904,7 +1172,16 @@ export function ProposalsPage() {
                       </Link>
                     )
                   )}
-                  {p.passed && !p.executed && p.type !== "payment" && (
+                  {p.passed && !p.executed && p.type === "config" && (
+                    org.myRole === "admin" && canExecuteConfigChange(p) ? (
+                      <ApplyConfigButton proposal={p} />
+                    ) : (
+                      <span className="text-[10px] font-mono text-muted-foreground-2 flex items-center gap-1">
+                        <Gavel className="h-3 w-3" /> passed — awaiting application
+                      </span>
+                    )
+                  )}
+                  {p.passed && !p.executed && p.type === "general" && (
                     <span className="text-[10px] font-mono text-muted-foreground-2 flex items-center gap-1">
                       <Gavel className="h-3 w-3" /> passed — no payment required
                     </span>

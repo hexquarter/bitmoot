@@ -8,8 +8,8 @@ import {
 import { executeApprovedPayment } from "../../lib/autoPay";
 import { payPlatformFee, platformFeeDisplay } from "../../lib/fees";
 import {
-  approvedPaymentProposals, paymentMatchesProposal, proposalPaymentMethod,
-  recordPaymentExecution, requireApprovedPayment, treasurySeed, unlockTreasury, useOrg,
+  approvedPaymentProposals, exceedsOperationalCap, orgWalletSeed, paymentMatchesProposal, proposalPaymentMethod,
+  recordPaymentExecution, requireApprovedPayment, unlockTreasury, useOrg,
   type PaymentMethod, type ProposalView,
 } from "../../lib/org";
 import {
@@ -115,9 +115,9 @@ export function PaymentsPage() {
   }, [selectedApproved?.id, mode]);
 
   const refresh = useCallback(async () => {
-    if (!canManage || !treasurySeed()) return;
+    if (!canManage || !orgWalletSeed()) return;
     try {
-      const wallet = await connectOrgWallet(treasurySeed()!);
+      const wallet = await connectOrgWallet(org.orgPubkey!, orgWalletSeed()!);
       const [b, txs] = await Promise.all([
         getOrgBalances(wallet),
         getOrgTransfers(wallet).catch(() => []),
@@ -149,7 +149,7 @@ export function PaymentsPage() {
 
   const run = async (key: string, label: string, fn: () => Promise<unknown>) => {
     if (!canManage) return;
-    if (!treasurySeed()) return toast.error("Unlock the treasury first");
+    if (!orgWalletSeed()) return toast.error("Unlock the treasury first");
     setBusy(key);
     try {
       await fn();
@@ -175,7 +175,13 @@ export function PaymentsPage() {
     if (!paymentMatchesProposal(selectedApproved, { recipient, amount })) {
       return toast.error("Recipient or amount no longer matches the approved proposal");
     }
-    if (!treasurySeed()) return toast.error("Unlock the treasury first");
+    if (!orgWalletSeed()) return toast.error("Unlock the treasury first");
+    // Hot-wallet cap: large payments settle through the reserve vault instead.
+    if (exceedsOperationalCap(mode === "usdb" ? null : selectedApproved.amountSats ?? amount ?? null)) {
+      return toast.error(
+        "Above the operational cap — settle this through the reserve vault (create an on-chain proposal)",
+      );
+    }
 
     setBusy(key);
     try {
@@ -185,7 +191,7 @@ export function PaymentsPage() {
       }
       const reference = await pay();
       try {
-        const wallet = await connectOrgWallet(treasurySeed()!);
+        const wallet = await connectOrgWallet(org.orgPubkey!, orgWalletSeed()!);
         await payPlatformFee(
           wallet,
           mode,
@@ -233,7 +239,7 @@ export function PaymentsPage() {
   const payInvoice = () =>
     selectedApproved &&
     runApprovedPayment("pay", "Invoice paid", invoice.trim(), undefined, async () => {
-      const wallet = await connectOrgWallet(treasurySeed()!);
+      const wallet = await connectOrgWallet(org.orgPubkey!, orgWalletSeed()!);
       const paid = await payOrgLightningInvoice(
         wallet,
         invoice.trim(),
@@ -245,7 +251,7 @@ export function PaymentsPage() {
 
   const createInvoice = () =>
     run("recv", "Invoice created", async () => {
-      const wallet = await connectOrgWallet(treasurySeed()!);
+      const wallet = await connectOrgWallet(org.orgPubkey!, orgWalletSeed()!);
       const res = await createOrgLightningInvoice(
         wallet,
         Number(recvAmount),
@@ -257,14 +263,14 @@ export function PaymentsPage() {
   const sendUsdbTx = () =>
     selectedApproved &&
     runApprovedPayment("usdb", "USDB sent", usdbAddress.trim(), Number(usdbAmount), async () => {
-      const wallet = await connectOrgWallet(treasurySeed()!);
+      const wallet = await connectOrgWallet(org.orgPubkey!, orgWalletSeed()!);
       return sendUsdb(wallet, usdbAddress.trim(), Number(usdbAmount));
     });
 
   const withdraw = () =>
     selectedApproved &&
     runApprovedPayment("onchain", "Withdrawal requested", btcAddress.trim(), Number(btcAmount), async () => {
-      const wallet = await connectOrgWallet(treasurySeed()!);
+      const wallet = await connectOrgWallet(org.orgPubkey!, orgWalletSeed()!);
       return withdrawOnchain(wallet, btcAddress.trim(), Number(btcAmount));
     });
 

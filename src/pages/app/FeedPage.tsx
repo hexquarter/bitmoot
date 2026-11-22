@@ -2,7 +2,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { Radio, Send, Globe2, Lock, MessageSquare, Hash } from "lucide-react";
 import { useAuth } from "../../lib/auth";
-import { publishFeedPost, shortNpub, useOrg } from "../../lib/org";
+import { publishFeedPost, canPublishFeed, shortNpub, useOrg } from "../../lib/org";
 import { useSettings } from "../../lib/settings";
 import { profileLabel, profileSubtitle, useProfiles } from "../../lib/profile";
 import { Avatar } from "../../components/ui";
@@ -19,7 +19,7 @@ export function FeedPage() {
   const [busy, setBusy] = useState(false);
 
   const publish = async () => {
-    if (!canManage || !draft.trim()) return;
+    if (!canPublishFeed() || !draft.trim()) return;
     setBusy(true);
     try {
       await publishFeedPost(draft.trim());
@@ -59,8 +59,8 @@ export function FeedPage() {
 
       <div className="grid lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-6">
-          {/* Composer — admins only */}
-          {canManage && (
+          {/* Composer — per org permissions */}
+          {canPublishFeed() && (
           <div className="rounded-lg border border-border bg-bg-elev-1/50 overflow-hidden">
             <div className="flex items-center justify-between px-5 py-3 border-b border-border bg-bg-elev-2/40">
               <div className="flex items-center gap-2">

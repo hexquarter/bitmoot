@@ -2,17 +2,21 @@ import { useEffect } from "react";
 import { toast } from "sonner";
 import {
   approvedPaymentProposals,
+  canExecuteConfigChange,
   cosignVaultSpend,
   createVaultSpend,
+  executeConfigChange,
   executeVaultSpend,
+  exceedsOperationalCap,
+  getActiveOrgPubkey,
   isOrgAdmin,
   listVaultSignatures,
   myVaultXOnly,
+  orgWalletSeed,
   paymentMatchesProposal,
   proposalPaymentMethod,
   recordPaymentExecution,
   requireApprovedPayment,
-  treasurySeed,
   unlockTreasury,
   useOrg,
   type ProposalView,
@@ -105,10 +109,16 @@ export async function executeApprovedPayment(
   if (authorized.id !== proposal.id) {
     throw new Error("This payment is covered by a different approved proposal");
   }
+  // Hot-wallet cap: large payments must settle through the reserve vault.
+  if (exceedsOperationalCap(proposal.amountSats ?? null)) {
+    throw new Error(
+      "This payment is above the operational cap — settle it through the reserve vault (create an on-chain proposal)",
+    );
+  }
 
   await assertNotExecuted(proposal.id);
-  const seed = treasurySeed() ?? (await unlockTreasury());
-  const wallet = await connectOrgWallet(seed);
+  if (!orgWalletSeed()) await unlockTreasury();
+  const wallet = await connectOrgWallet(getActiveOrgPubkey()!, orgWalletSeed()!);
 
   let reference: string;
   let feeAmountSats = proposal.amountSats ?? null;
@@ -200,6 +210,23 @@ export function useAutoSubmitPayments(): void {
         } catch (error) {
           // Manual “Make the payment” controls stay available on failure.
           console.warn("[bitmoot] automatic payment submission failed:", error);
+        } finally {
+          release(key);
+        }
+      }
+
+      // Passed config proposals (threshold / signer / member changes) apply
+      // automatically too. Needs an unlocked treasury; if locked, the manual
+      // "Apply change" control on the proposal stays available.
+      for (const proposal of org.proposals) {
+        if (!canExecuteConfigChange(proposal)) continue;
+        const key = `${proposal.id}:config`;
+        if (!claim(key)) continue;
+        try {
+          const summary = await executeConfigChange(proposal);
+          toast.success(`Config change applied · ${summary}`);
+        } catch (error) {
+          console.warn("[bitmoot] automatic config change execution failed:", error);
         } finally {
           release(key);
         }

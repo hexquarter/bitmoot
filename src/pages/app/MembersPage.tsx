@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { toast } from "sonner";
-import { Key, Crown, UserPlus, RefreshCw, Users, Lock, ShieldCheck, Unlock } from "lucide-react";
+import { Key, Crown, UserPlus, RefreshCw, Users, Lock, ShieldCheck, Unlock, IdCard } from "lucide-react";
 import {
-  approveMember, publishVaultSigner, shortNpub, syncVaultSigners, treasurySeed, useOrg,
+  proposeConfigChange, approveMember, publishVaultSigner, shortNpub, syncVaultSigners, treasurySeed, useOrg,
 } from "../../lib/org";
+import { configChangeSummary } from "../../lib/org";
 import { profileLabel, profileSubtitle, useProfiles } from "../../lib/profile";
 import { Avatar } from "../../components/ui";
 import { OrgWalletNote } from "../../components/OrgWalletNote";
@@ -26,6 +27,10 @@ export function MembersPage() {
   ]);
   const threshold = org.config?.threshold ?? 0;
   const vaultSigners = org.config?.vaultSigners ?? [];
+  const [newMemberNpub, setNewMemberNpub] = useState("");
+  const [newMemberKey, setNewMemberKey] = useState("");
+  /** Inline editor for pasting a member's x-only signer key (per member row). */
+  const [keyEditor, setKeyEditor] = useState<{ pubkey: string; value: string } | null>(null);
 
   const run = async (key: string, label: string, fn: () => Promise<unknown>) => {
     if (!canManage) return;
@@ -39,6 +44,29 @@ export function MembersPage() {
       setBusy(null);
     }
   };
+
+  const addByNpub = () =>
+    run("addNpub", "Proposal published — applies automatically when it passes", async () => {
+      if (!newMemberNpub.trim().startsWith("npub1")) {
+        throw new Error("Enter an npub (starts with npub1)");
+      }
+      await proposeConfigChange({
+        action: "addMember",
+        memberNpub: newMemberNpub.trim(),
+        memberXOnly: newMemberKey.trim() || undefined,
+      });
+      setNewMemberNpub("");
+      setNewMemberKey("");
+    });
+
+  const submitSignerKey = () =>
+    run(`key:${keyEditor!.pubkey}`, "Proposal published — applies automatically when it passes", async () => {
+      await proposeConfigChange({
+        action: "addSigner",
+        xOnly: keyEditor!.value,
+      });
+      setKeyEditor(null);
+    });
 
   const approve = (pubkey: string) =>
     run(`approve:${pubkey}`, "Member approved — seed share sent", () => approveMember(pubkey));
@@ -86,6 +114,59 @@ export function MembersPage() {
         <div className="rounded-md border border-border bg-bg-elev-1/50 px-4 py-3 text-sm text-muted-foreground">
           Members can see who belongs to the org and which keys sign its shared vault. Only administrators approve
           join requests or change signer keys.
+        </div>
+      )}
+
+      {canManage && (
+        <div className="rounded-lg border border-border bg-bg-elev-1/50 p-5 space-y-3">
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <IdCard className="h-4 w-4 text-primary" /> Add a member
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Paste their npub to propose adding them — members vote, and the change applies automatically once it
+            passes: they receive an encrypted seed share and discover the org on their next sign-in.
+          </p>
+          <div className="flex gap-2 flex-wrap">
+            <input
+              value={newMemberNpub}
+              onChange={(e) => setNewMemberNpub(e.target.value)}
+              placeholder="npub1…"
+              disabled={busy !== null}
+              className="h-10 min-w-64 flex-1 rounded-md border border-border bg-bg-elev-2/50 px-3 font-mono text-sm focus:outline-none focus:border-primary/60 transition disabled:opacity-50"
+            />
+            <button
+              onClick={addByNpub}
+              disabled={busy === "addNpub" || !newMemberNpub.trim()}
+              className="h-10 px-4 shrink-0 rounded-md bg-primary text-primary-foreground text-sm font-medium flex items-center gap-2 hover:opacity-90 transition disabled:opacity-50"
+            >
+              <UserPlus className="h-4 w-4" />
+              {busy === "addNpub" ? "Proposing…" : "Propose member"}
+            </button>
+          </div>
+          <details className="group">
+            <summary className="cursor-pointer text-[11px] text-muted-foreground hover:text-primary transition select-none">
+              Optional: include their vault signer key
+            </summary>
+            <div className="mt-2 flex gap-2 flex-wrap">
+              <input
+                value={newMemberKey}
+                onChange={(e) => setNewMemberKey(e.target.value)}
+                placeholder="their x-only vault signer key (64 hex chars)"
+                disabled={busy !== null}
+                className="h-9 min-w-64 flex-1 rounded-md border border-border bg-bg-elev-2/50 px-3 font-mono text-xs focus:outline-none focus:border-primary/60 transition disabled:opacity-50"
+              />
+            </div>
+            <p className="mt-1 text-[10px] text-muted-foreground-2">
+              Only if they sent you the key directly (it's public, so pasting is safe). Leave empty and use
+              “Sync vault signers” once they publish it themselves.
+            </p>
+          </details>
+          {!seedUnlocked && (
+            <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground-2">
+              <Lock className="h-3 w-3" /> Proposing works without unlocking; an admin must unlock the treasury once
+              the proposal passes so the org key can sign the change.
+            </div>
+          )}
         </div>
       )}
 
@@ -142,8 +223,44 @@ export function MembersPage() {
                     )}
                   </div>
                 </div>
-                <div className="md:col-span-4 font-mono text-[11px] text-muted-foreground truncate">
+                <div className="md:col-span-4 font-mono text-[11px] text-muted-foreground">
                   {m.vaultXOnly ? shortXOnly(m.vaultXOnly) : "— not published —"}
+                  {canManage && !m.vaultXOnly && (
+                    <div className="mt-1 font-sans">
+                      {keyEditor?.pubkey === m.pubkey ? (
+                        <div className="flex gap-1.5 flex-wrap items-center">
+                          <input
+                            value={keyEditor.value}
+                            onChange={(e) => setKeyEditor({ pubkey: m.pubkey, value: e.target.value })}
+                            onKeyDown={(e) => e.key === "Enter" && submitSignerKey()}
+                            placeholder="x-only signer key (64 hex)"
+                            disabled={busy !== null}
+                            className="h-8 min-w-48 flex-1 rounded border border-border bg-bg-elev-2/60 px-2 font-mono text-[11px] focus:outline-none focus:border-primary/60 disabled:opacity-50"
+                          />
+                          <button
+                            onClick={submitSignerKey}
+                            disabled={busy === `key:${m.pubkey}` || !keyEditor.value.trim()}
+                            className="h-8 px-2 rounded bg-primary text-primary-foreground text-[10px] font-medium hover:opacity-90 transition disabled:opacity-50"
+                          >
+                            {busy === `key:${m.pubkey}` ? "Adding…" : "Add"}
+                          </button>
+                          <button
+                            onClick={() => setKeyEditor(null)}
+                            className="text-[10px] text-muted-foreground hover:text-foreground"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => setKeyEditor({ pubkey: m.pubkey, value: "" })}
+                          className="text-[10px] text-primary hover:underline"
+                        >
+                          + Add signer key
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
                 <div className="md:col-span-2">
                   <span className="text-[10px] font-mono uppercase tracking-wider px-2 py-1 rounded border border-border bg-bg-elev-2/50">
@@ -155,8 +272,12 @@ export function MembersPage() {
                     <span className="text-[10px] font-mono uppercase tracking-wider px-2 py-1 rounded border border-primary/30 text-primary bg-primary-dim flex items-center gap-1">
                       <Key className="h-2.5 w-2.5" /> signer
                     </span>
+                  ) : m.vaultXOnly ? (
+                    <span className="text-[10px] font-mono text-muted-foreground-2 flex items-center gap-1" title="Key published — an admin clicks “Sync vault signers” (treasury unlocked) to add it to the vault">
+                      awaiting sync
+                    </span>
                   ) : (
-                    <span className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground-2">—</span>
+                    <span className="text-[10px] font-mono text-muted-foreground-2">—</span>
                   )}
                 </div>
               </div>
