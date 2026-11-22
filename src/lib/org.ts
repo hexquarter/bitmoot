@@ -409,9 +409,19 @@ function rebuild() {
       members.set(pubkey, { pubkey, npub: npubEncode(pubkey), vaultXOnly: null, isCouncil: true });
     }
   }
-  // vault signers published by anyone
+
+  // Open protocol: relays will accept anything from anyone. Every org event
+  // below is therefore pinned to a known identity — the org key itself, the
+  // council, or (for join requests) the open gate outsiders must use.
+  const councilPubkeys = new Set(config?.council ?? []);
+  const joinRequestAuthors = new Set(
+    collectByKind(Kind.JoinRequest).map((ev) => ev.pubkey),
+  );
+
+  // vault signers published by members (self-attested by their own key)
   const signerEvents = collectByKind(Kind.VaultSigner);
   for (const ev of signerEvents) {
+    if (!councilPubkeys.has(ev.pubkey) && !joinRequestAuthors.has(ev.pubkey)) continue;
     const content = parseJsonContent<{ xOnly: string }>(ev);
     const xOnly = content?.xOnly;
     const member = members.get(ev.pubkey);
@@ -420,8 +430,10 @@ function rebuild() {
   }
 
   // Wallet-share recipients are full members; council members are admins.
+  // Shares are org-key-signed — a third party cannot mint membership.
   const memberPubkeys = new Set<string>(config?.council ?? []);
   for (const ev of collectByKind(Kind.WalletShare)) {
+    if (orgPubkey && ev.pubkey !== orgPubkey) continue;
     const recipient = tagValue(ev, "p");
     if (recipient) memberPubkeys.add(recipient);
   }
@@ -453,9 +465,10 @@ function rebuild() {
     }
   }
 
-  // votes: latest per member per proposal
+  // votes: latest per member per proposal — non-member votes are never trusted
   const votesByProposal = new Map<string, Map<string, { author: string; choice: VoteChoice; createdAt: number }>>();
   for (const ev of collectByKind(Kind.Vote)) {
+    if (!memberPubkeys.has(ev.pubkey)) continue;
     const proposalId = tagValue(ev, "e");
     if (!proposalId) continue;
     const content = governancePayload<{ choice: VoteChoice }>(ev);
@@ -465,9 +478,10 @@ function rebuild() {
     votesByProposal.set(proposalId, map);
   }
 
-  // executions by proposal
+  // executions by proposal — admin-signed only
   const executions = new Map<string, NonNullable<ProposalView["execution"]>>();
   for (const ev of collectByKind(Kind.Execution)) {
+    if (!councilPubkeys.has(ev.pubkey)) continue;
     const proposalId = tagValue(ev, "e");
     const content = parseJsonContent<{
       txid: string;
@@ -483,10 +497,11 @@ function rebuild() {
     });
   }
 
-  // psbt contribution counts per proposal (latest per author only)
+  // psbt contribution counts per proposal (latest per author only) — members only
   const psbtCounts = new Map<string, number>();
   const psbtByProposal = new Map<string, Map<string, Event>>();
   for (const ev of collectByKind(Kind.PsbtCosign)) {
+    if (!councilPubkeys.has(ev.pubkey)) continue;
     const proposalId = tagValue(ev, "e");
     if (!proposalId) continue;
     const content = parseJsonContent<{ psbt: string }>(ev);
@@ -504,6 +519,7 @@ function rebuild() {
   const voterSet = memberPubkeys;
   const proposals: ProposalView[] = [];
   for (const ev of collectByKind(Kind.Proposal)) {
+    if (!memberPubkeys.has(ev.pubkey)) continue;
     const content = governancePayload<{
       title: string;
       body: string;
@@ -553,9 +569,9 @@ function rebuild() {
   }
   proposals.sort((a, b) => b.createdAt - a.createdAt);
 
-  // feed (kind 1)
+  // feed (kind 1) — member posts only; outsiders cannot write into the feed
   const feed: FeedPost[] = [...store.events.values()]
-    .filter((ev) => ev.kind === 1)
+    .filter((ev) => ev.kind === 1 && memberPubkeys.has(ev.pubkey))
     .map((ev) => ({ id: ev.id, author: ev.pubkey, content: ev.content, createdAt: ev.created_at }))
     .sort((a, b) => b.createdAt - a.createdAt)
     .slice(0, 200);
