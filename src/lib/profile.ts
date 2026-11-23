@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 import { npubEncode } from "nostr-tools/nip19";
+import { finalizeEvent } from "nostr-tools/pure";
 import type { Event } from "nostr-tools";
 import { Kind, publish, query, relays, subscribe } from "./nostr";
 import { DEFAULT_RELAYS } from "./settings";
 import { getAuth, subscribeAuth } from "./auth";
+import { requireSeed } from "./org";
 
 /**
  * Public Nostr profile metadata (kind 0, NIP-01).
@@ -247,12 +249,10 @@ export function useProfiles(pubkeys: string[]): Record<string, NostrProfile> {
   return profiles;
 }
 
-/** Publish the signed-in user's kind 0 metadata event. */
-export async function saveProfile(input: NostrProfile): Promise<void> {
-  const signer = getAuth().signer;
-  if (!signer) throw new Error("Sign in to edit your profile");
+/** Merge edited fields over the existing profile content (user and org profiles). */
+function buildProfileContent(authorPubkey: string, input: NostrProfile): Record<string, unknown> {
   const displayName = cleanString(input.displayName) ?? cleanString(input.display_name);
-  const content: Record<string, unknown> = { ...(getProfile(signer.pubkey) ?? {}) };
+  const content: Record<string, unknown> = { ...(getProfile(authorPubkey) ?? {}) };
 
   // Publish standard field names; drop legacy aliases and conflicting bio keys.
   delete content.displayName;
@@ -273,15 +273,50 @@ export async function saveProfile(input: NostrProfile): Promise<void> {
     if (value === undefined) delete content[key];
     else content[key] = value;
   }
+  return content;
+}
 
+/** Publish the signed-in user's kind 0 metadata event. */
+export async function saveProfile(input: NostrProfile): Promise<void> {
+  const signer = getAuth().signer;
+  if (!signer) throw new Error("Sign in to edit your profile");
   const event = await signer.signEvent({
     kind: Kind.Profile,
     created_at: Math.floor(Date.now() / 1000),
     tags: [],
-    content: JSON.stringify(content),
+    content: JSON.stringify(buildProfileContent(signer.pubkey, input)),
   });
   await publish(event);
   ingestProfile(event);
+}
+
+/**
+ * Publish the organization's public profile (kind 0, NIP-01), signed with the
+ * org key. The org npub then shows its name, picture and contact details in
+ * every Nostr client, not just inside BitMoot. The payload is merged over the
+ * current relay content, so omitted fields keep their existing values.
+ */
+export async function publishOrgProfile(
+  input: Partial<NostrProfile>,
+  orgSk: Uint8Array,
+  orgPubkey: string,
+): Promise<void> {
+  const event = finalizeEvent(
+    {
+      kind: Kind.Profile,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [],
+      content: JSON.stringify(buildProfileContent(orgPubkey, input)),
+    },
+    orgSk,
+  );
+  await publish(event);
+  ingestProfile(event);
+}
+
+export async function saveOrgProfile(input: NostrProfile): Promise<void> {
+  const { orgSk, orgPubkey } = requireSeed();
+  await publishOrgProfile(input, orgSk, orgPubkey);
 }
 
 /** Human-readable label that always works, even without a profile event. */

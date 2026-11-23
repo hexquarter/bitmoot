@@ -21,7 +21,7 @@ import { useAuth } from "../lib/auth";
 import { useAutoSubmitPayments } from "../lib/autoPay";
 import { lockTreasury, shortNpub, useOrg } from "../lib/org";
 import { switchOrg, useMyOrgs } from "../lib/orgs";
-import { profileLabel, useProfile } from "../lib/profile";
+import { profileLabel, useProfile, useProfiles } from "../lib/profile";
 import { logOut } from "../lib/session";
 import { useSettings } from "../lib/settings";
 import { Avatar } from "../components/ui";
@@ -56,6 +56,7 @@ export const AppPage = () => {
   const org = useOrg();
   const settings = useSettings();
   const profile = useProfile(signer?.pubkey);
+  const orgProfile = useProfile(org.orgPubkey);
   const { orgs } = useMyOrgs();
   const orgSwitcherRef = useRef<HTMLDetailsElement>(null);
   useAutoSubmitPayments();
@@ -129,7 +130,11 @@ export const AppPage = () => {
 
         <details ref={orgSwitcherRef} className="org-switcher-shell">
           <summary className="org-switcher" aria-label="Switch organization">
-            <span className="org-mark">{orgName.slice(0, 2).toUpperCase()}</span>
+            <span className="org-mark">
+              {orgProfile?.picture
+                ? <img src={orgProfile.picture} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: "inherit" }} />
+                : orgName.slice(0, 2).toUpperCase()}
+            </span>
             <span>
               <strong>{orgName}</strong>
               <small>{org.orgNpub ? shortNpub(org.orgNpub) : "choose an organization"}</small>
@@ -188,7 +193,7 @@ export const AppPage = () => {
               </Link>
             )}
             {hasOrgAccess && (
-              <Link className="new-proposal" to="/app/proposals"><Plus size={15} /> NEW PROPOSAL</Link>
+              <Link className="new-proposal flex items-center gap-2" to="/app/proposals"><Plus size={15} /> NEW PROPOSAL</Link>
             )}
             <Link to="/app/profile" className="flex items-center gap-2">
               <Avatar name={profileLabel(signer.pubkey, profile)} src={profile?.picture} size={28} />

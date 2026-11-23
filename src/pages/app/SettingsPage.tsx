@@ -1,14 +1,15 @@
-import { useState } from "react";
+import { useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import { Link } from "react-router-dom";
 import { Shield, Radio, Key, Globe2, Trash2, Plus, Check, Copy, Bitcoin, Zap, LogOut, UserRound, Code2, type LucideIcon } from "lucide-react";
 import { useAuth } from "../../lib/auth";
-import { lockTreasury, npubToHex, shortNpub, useOrg } from "../../lib/org";
-import { profileLabel, profileSubtitle, useProfile } from "../../lib/profile";
+import { lockTreasury, npubToHex, proposeConfigChange, shortNpub, useOrg, orgWalletSeed } from "../../lib/org";
+import { hasProfileLoaded, profileLabel, profileSubtitle, saveOrgProfile, useProfile } from "../../lib/profile";
 import { logOut } from "../../lib/session";
 import { setSettings, useSettings, DEFAULT_RELAYS, type SparkNetwork } from "../../lib/settings";
 import { disconnectOrgWallet } from "../../lib/spark";
+import { Avatar, Button, Field, Input } from "../../components/ui";
 
 function Section({ icon: Icon, title, desc, children }: { icon: LucideIcon; title: string; desc: string; children: React.ReactNode }) {
   return (
@@ -39,6 +40,37 @@ export function SettingsPage() {
   const [explorer, setExplorer] = useState(settings.explorerApiBase ?? "");
   const [showMySeed, setShowMySeed] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const orgProfile = useProfile(org.orgPubkey);
+  const orgProfileLoaded = org.orgPubkey ? hasProfileLoaded(org.orgPubkey) : false;
+  const orgProfileKey = orgProfile ? JSON.stringify(orgProfile) : "empty";
+
+  const saveOrgProfileInfo = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    const text = (name: string) => String(data.get(name) ?? "").trim() || undefined;
+    setBusy("orgprofile");
+    try {
+      await proposeConfigChange({
+        action: "setOrgProfile",
+        orgProfile: {
+          name: text("name"),
+          displayName: text("displayName"),
+          about: text("about"),
+          picture: text("picture"),
+          banner: text("banner"),
+          nip05: text("nip05"),
+          lud16: text("lud16"),
+          website: text("website"),
+        },
+      });
+      toast.success("Profile proposal published — applies automatically when it passes");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const copy = (text: string, key: string) => {
     navigator.clipboard?.writeText(text);
@@ -183,6 +215,73 @@ export function SettingsPage() {
           </div>
         </div>
       </Section>
+
+      {org.myRole === "admin" && org.orgPubkey && (
+        <Section icon={Globe2} title="Organization profile" desc="Public metadata for the org's Nostr identity, signed with the org key.">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <Avatar name={org.config?.name ?? org.orgNpub ?? "org"} src={orgProfile?.picture} size={40} />
+              <div className="min-w-0">
+                <div className="text-sm font-medium truncate">{profileLabel(org.orgPubkey, orgProfile)}</div>
+                <div className="truncate font-mono text-[10px] text-muted-foreground-2">{org.orgNpub}</div>
+              </div>
+            </div>
+            <span className={"font-mono text-[10px] uppercase tracking-wider " + (orgProfile ? "text-primary" : "text-muted-foreground-2")}>
+              {orgProfile ? "loaded from relays" : orgProfileLoaded ? "not found" : "loading…"}
+            </span>
+          </div>
+          <form key={orgProfileKey} className="space-y-4" onSubmit={saveOrgProfileInfo}>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Name">
+                  <Input name="name" defaultValue={orgProfile?.name ?? org.config?.name ?? ""} placeholder="Probe Council" />
+                </Field>
+                <Field label="Display name">
+                  <Input name="displayName" defaultValue={orgProfile?.display_name ?? ""} placeholder="Probe Council HQ" />
+                </Field>
+              </div>
+              <Field label="About" hint="Shown with the org npub in every Nostr client.">
+                <textarea
+                  name="about"
+                  defaultValue={orgProfile?.about ?? org.config?.description ?? ""}
+                  rows={3}
+                  placeholder="A music co-op paying collaborators from a shared budget."
+                  className="w-full resize-none rounded-md border border-border bg-bg-elev-2/50 px-3 py-2 text-sm focus:outline-none focus:border-primary/60"
+                />
+              </Field>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Picture URL">
+                  <Input name="picture" defaultValue={orgProfile?.picture ?? ""} placeholder="https://…/logo.png" />
+                </Field>
+                <Field label="Banner URL" hint="Header image on the org profile.">
+                  <Input name="banner" defaultValue={orgProfile?.banner ?? ""} placeholder="https://…/banner.jpg" />
+                </Field>
+              </div>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Nostr address" hint="NIP-05 identifier for the org, e.g. org@yourdomain.">
+                  <Input name="nip05" defaultValue={orgProfile?.nip05 ?? ""} placeholder="org@example.com" />
+                </Field>
+                <Field label="Lightning address" hint="LUD-16 address for org zaps.">
+                  <Input name="lud16" defaultValue={orgProfile?.lud16 ?? ""} placeholder="org@wallet.com" />
+                </Field>
+              </div>
+              <Field label="Website">
+                <Input name="website" defaultValue={orgProfile?.website ?? ""} placeholder="https://example.com" />
+              </Field>
+              <div className="flex items-center justify-between gap-3 border-t border-border pt-3">
+                <span className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground-2">
+                  signed with the org key · public to all of Nostr
+                </span>
+                <Button type="submit" disabled={busy === "orgprofile"}>
+                  {busy === "orgprofile" ? "Proposing…" : "Propose profile change"}
+                </Button>
+              </div>
+              <p className="text-[11px] text-muted-foreground-2">
+                Creates a voted proposal; the profile is published with the org key automatically once it passes —
+                an administrator must have the treasury unlocked then.
+              </p>
+            </form>
+        </Section>
+      )}
 
       <Section icon={Radio} title="Nostr relays" desc="Where governance events are published and read from.">
         {settings.relays.map((r) => (

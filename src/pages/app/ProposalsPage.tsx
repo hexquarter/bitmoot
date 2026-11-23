@@ -429,7 +429,7 @@ function VoteButtons({ proposal, voted }: { proposal: ProposalView; voted: VoteC
     "h-9 px-4 rounded-md text-sm font-medium flex items-center justify-center gap-1.5 transition disabled:opacity-50";
 
   return (
-    <div className="w-full rounded-md border border-primary/30 bg-primary-dim/30 p-3 sm:w-auto">
+    <div className="w-full rounded-md sm:w-auto">
       <div className="mb-2 flex items-center gap-2 text-xs font-medium text-primary">
         <Vote className="h-4 w-4" /> {voted ? "Change your vote" : "Your vote is needed"}
       </div>

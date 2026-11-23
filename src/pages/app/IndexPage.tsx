@@ -3,9 +3,13 @@ import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import { ArrowRight, Building2, Plus, Send, Users, Vote } from "lucide-react";
 import { useAuth } from "../../lib/auth";
+import {
+  CheckCircle2, FileSignature, Gavel, KeyRound, MessageSquare, UserPlus,
+  type LucideIcon,
+} from "lucide-react";
 import { createOrg, joinOrg, npubToHex, shortNpub, useOrg } from "../../lib/org";
 import { switchOrg, useMyOrgs } from "../../lib/orgs";
-import { profileLabel, profileSubtitle, useProfile } from "../../lib/profile";
+import { profileLabel, profileSubtitle, useProfile, useProfiles } from "../../lib/profile";
 import { useSettings } from "../../lib/settings";
 import { Badge, Button, Card, Field, Input, PageHeader } from "../../components/ui";
 import { OrgWalletNote } from "../../components/OrgWalletNote";
@@ -57,9 +61,8 @@ function CreatedOrgCard({ onDone }: { onDone: () => void }) {
 }
 
 /** First-run onboarding and the list of orgs found for this Nostr identity. */
-function OrgSetup({ onCreated }: { onCreated: () => void }) {
-  const signer = useAuth().signer!;
-  const profile = useProfile(signer.pubkey);
+/** Org list + create/join forms — used on the onboarding page and the dashboard. */
+function OrgSetupPanel({ onCreated }: { onCreated: () => void }) {
   const { orgs, loading, reload } = useMyOrgs();
   const settings = useSettings();
   const [mode, setMode] = useState<"list" | "create" | "join">("list");
@@ -113,17 +116,7 @@ function OrgSetup({ onCreated }: { onCreated: () => void }) {
   };
 
   return (
-    <div className="max-w-4xl space-y-6">
-      <PageHeader
-        title={`Hello, ${profileLabel(signer.pubkey, profile)}`}
-        description={
-          profileSubtitle(profile)
-            ? `${profileSubtitle(profile)} · Your Nostr identity is already your account. Pick an organization below, or start one.`
-            : "Your Nostr identity is already your account. Pick an organization below, or start one."
-        }
-        action={<Link to="/app/profile" className="text-sm text-primary hover:underline">Edit my profile →</Link>}
-      />
-
+    <div className="space-y-6">
       {mode === "list" && (
         <>
           <Card className="overflow-hidden">
@@ -261,10 +254,33 @@ function OrgSetup({ onCreated }: { onCreated: () => void }) {
   );
 }
 
+/** Full-page onboarding for keys without an org: greeting + the org panel. */
+function OrgSetup({ onCreated }: { onCreated: () => void }) {
+  const signer = useAuth().signer!;
+  const profile = useProfile(signer.pubkey);
+  return (
+    <div className="max-w-4xl space-y-6">
+      <PageHeader
+        title={`Hello, ${profileLabel(signer.pubkey, profile)}`}
+        description={
+          profileSubtitle(profile)
+            ? `${profileSubtitle(profile)} · Your Nostr identity is already your account. Pick an organization below, or start one.`
+            : "Your Nostr identity is already your account. Pick an organization below, or start one."
+        }
+        action={<Link to="/app/profile" className="text-sm text-primary hover:underline">Edit my profile →</Link>}
+      />
+      <OrgSetupPanel onCreated={onCreated} />
+    </div>
+  );
+}
+
 export function AppIndexPage() {
   const org = useOrg();
   const signer = useAuth().signer;
   const [created, setCreated] = useState(false);
+  const [showOrgPanel, setShowOrgPanel] = useState(false);
+  // Unconditional: hooks must run before any early return below.
+  const activityProfiles = useProfiles([...new Set(org.activity.map((item) => item.author))]);
   if (created) return <CreatedOrgCard onDone={() => setCreated(false)} />;
 
   const hasOrgAccess = org.myRole === "admin" || org.myRole === "member";
@@ -280,7 +296,17 @@ export function AppIndexPage() {
   const passedPayments = org.proposals.filter(
     (p) => p.type === "payment" && p.passed && !p.executed,
   );
-  const activity = org.feed.slice(0, 5);
+  const activity = org.activity;
+  const activityIcon: Record<string, LucideIcon> = {
+    proposal: Vote,
+    vote: CheckCircle2,
+    payment: Send,
+    config: Gavel,
+    cosign: FileSignature,
+    post: MessageSquare,
+    join: UserPlus,
+    share: KeyRound,
+  };
 
   return (
     <div className="space-y-6">
@@ -295,6 +321,31 @@ export function AppIndexPage() {
       />
 
       <OrgWalletNote org={org} compact />
+
+      <Card className="overflow-hidden">
+        <button
+          onClick={() => setShowOrgPanel((v) => !v)}
+          className="flex w-full items-center justify-between gap-3 px-5 py-4 text-left transition hover:bg-bg-elev-2/40"
+        >
+          <div className="min-w-0">
+            <div className="text-sm font-medium">Switch, create or join an organization</div>
+            <div className="mt-0.5 text-xs text-muted-foreground">
+              Your key can belong to several orgs — the workspace follows your choice.
+            </div>
+          </div>
+          <Building2 className="h-4 w-4 shrink-0 text-primary" />
+        </button>
+        {showOrgPanel && (
+          <div className="border-t border-border p-5">
+            <OrgSetupPanel
+              onCreated={() => {
+                setShowOrgPanel(false);
+                setCreated(true);
+              }}
+            />
+          </div>
+        )}
+      </Card>
 
       <div className="grid gap-4 md:grid-cols-3">
         <Card className="border-primary/40 bg-primary-dim/20 p-5">
@@ -345,19 +396,45 @@ export function AppIndexPage() {
         </div>
         {activity.length === 0 ? (
           <div className="px-5 py-8 text-sm text-muted-foreground">
-            No posts yet. Share an update in the feed.
+            No activity yet — proposals, votes, payments, config changes and posts will appear here.
           </div>
         ) : (
-          <div className="divide-y divide-border">
-            {activity.map((post) => (
-              <div key={post.id} className="flex flex-wrap items-start gap-3 px-5 py-3.5">
-                <span className="mt-0.5 font-mono text-[11px] text-muted-foreground-2">
-                  {new Date(post.createdAt * 1000).toLocaleTimeString()}
-                </span>
-                <span className="font-mono text-[11px] text-primary">{shortNpub(post.author)}</span>
-                <span className="min-w-0 flex-1 text-sm text-muted-foreground">{post.content}</span>
-              </div>
-            ))}
+          <div className="max-h-[32rem] divide-y divide-border overflow-y-auto">
+            {activity.map((item) => {
+              const Icon = activityIcon[item.type] ?? Vote;
+              const body = (
+                <>
+                  <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary-dim text-primary">
+                    <Icon className="h-3.5 w-3.5" />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm text-foreground/90" title={item.label}>
+                      {item.label}
+                    </div>
+                    <div className="mt-0.5 font-mono text-[11px] text-muted-foreground-2">
+                      {profileLabel(item.author, activityProfiles[item.author])} ·{" "}
+                      {new Date(item.createdAt * 1000).toLocaleString()}
+                    </div>
+                  </div>
+                </>
+              );
+              const cls = "flex flex-wrap items-start gap-3 px-5 py-3.5 transition hover:bg-bg-elev-2/40";
+              if (item.proposalId) {
+                return (
+                  <Link key={item.id} to="/app/proposals" className={cls + " block"}>
+                    {body}
+                  </Link>
+                );
+              }
+              if (item.postId) {
+                return (
+                  <Link key={item.id} to="/app/feed" className={cls + " block"}>
+                    {body}
+                  </Link>
+                );
+              }
+              return <div key={item.id} className={cls}>{body}</div>;
+            })}
           </div>
         )}
       </Card>

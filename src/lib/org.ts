@@ -6,6 +6,7 @@ import type { Event, EventTemplate, VerifiedEvent } from "nostr-tools";
 import { Kind, publish, subscribe, query, orgAddressTag, parseJsonContent, tagValue, relays } from "./nostr";
 import { getSettings, setSettings, subscribeSettings } from "./settings";
 import { getAuth, subscribeAuth, type NostrSigner } from "./auth";
+import { publishOrgProfile, type NostrProfile } from "./profile";
 import {
   generateOrgSeed,
   orgNostrKeys,
@@ -251,6 +252,27 @@ export interface JoinRequestView {
   vaultXOnly: string | null;
 }
 
+export type OrgActivityType =
+  | "proposal"
+  | "vote"
+  | "payment"
+  | "config"
+  | "cosign"
+  | "post"
+  | "join"
+  | "share";
+
+/** One entry of the org's unified history (proposals, votes, payments, posts…). */
+export interface OrgActivityItem {
+  id: string;
+  type: OrgActivityType;
+  author: string;
+  createdAt: number;
+  label: string;
+  proposalId?: string;
+  postId?: string;
+}
+
 export interface OrgState {
   orgPubkey: string | null;
   orgNpub: string | null;
@@ -263,6 +285,8 @@ export interface OrgState {
   proposals: ProposalView[];
   feed: FeedPost[];
   joinRequests: JoinRequestView[];
+  /** Unified history: proposals, votes, payments, config changes, posts, joins. */
+  activity: OrgActivityItem[];
   loading: boolean;
   seedUnlocked: boolean;
   /** Role of the current signer; null until an org is loaded. */
@@ -280,6 +304,7 @@ const EMPTY_STATE: OrgState = {
   proposals: [],
   feed: [],
   joinRequests: [],
+  activity: [],
   loading: false,
   seedUnlocked: false,
   myRole: null,
@@ -480,6 +505,7 @@ function rebuild() {
 
   // executions by proposal — admin-signed only
   const executions = new Map<string, NonNullable<ProposalView["execution"]>>();
+  const executionEvents: { author: string; createdAt: number; proposalId: string; method?: string; reference: string }[] = [];
   for (const ev of collectByKind(Kind.Execution)) {
     if (!councilPubkeys.has(ev.pubkey)) continue;
     const proposalId = tagValue(ev, "e");
@@ -489,12 +515,14 @@ function rebuild() {
       method?: PaymentMethod | "vault";
     }>(ev);
     if (!proposalId || !content?.txid) continue;
+    const reference = content.paymentId ?? content.txid;
     executions.set(proposalId, {
       txid: content.txid,
       createdAt: ev.created_at,
-      reference: content.paymentId ?? content.txid,
+      reference,
       method: content.method,
     });
+    executionEvents.push({ author: ev.pubkey, createdAt: ev.created_at, proposalId, method: content.method, reference });
   }
 
   // psbt contribution counts per proposal (latest per author only) — members only
@@ -590,6 +618,108 @@ function rebuild() {
   }
   joinRequests.sort((a, b) => b.createdAt - a.createdAt);
 
+  // -----------------------------------------------------------------------
+  // Unified history: proposals, votes, payments, config changes, cosigns,
+  // posts, join requests, seed shares — newest first. Replaceable events
+  // (votes, shares) keep their latest version per key, as published.
+  // -----------------------------------------------------------------------
+  const proposalTitles = new Map(proposals.map((p) => [p.id, p.title]));
+  const activity: OrgActivityItem[] = [];
+  for (const p of proposals) {
+    activity.push({
+      id: `proposal:${p.id}`,
+      type: "proposal",
+      author: p.author,
+      createdAt: p.createdAt,
+      label: `Proposal: ${p.title}`,
+      proposalId: p.id,
+    });
+  }
+  for (const [proposalId, votes] of votesByProposal) {
+    const title = proposalTitles.get(proposalId) ?? "a proposal";
+    for (const v of votes.values()) {
+      activity.push({
+        id: `vote:${proposalId}:${v.author}`,
+        type: "vote",
+        author: v.author,
+        createdAt: v.createdAt,
+        label: `Voted ${v.choice} on “${title}”`,
+        proposalId,
+      });
+    }
+  }
+  for (const e of executionEvents) {
+    const isMigration = e.proposalId.startsWith("migration:");
+    activity.push({
+      id: `exec:${e.proposalId}`,
+      type: e.method === "config" ? "config" : "payment",
+      author: e.author,
+      createdAt: e.createdAt,
+      label: isMigration
+        ? "Retired vault swept into the current vault"
+        : e.method === "config"
+          ? "Configuration change applied"
+          : `Payment executed · ${e.reference.slice(0, 24)}`,
+      proposalId: isMigration ? undefined : e.proposalId,
+    });
+  }
+  for (const [proposalId, authors] of psbtByProposal) {
+    const title = proposalTitles.get(proposalId) ?? "a proposal";
+    for (const ev of authors.values()) {
+      activity.push({
+        id: `cosign:${proposalId}:${ev.pubkey}`,
+        type: "cosign",
+        author: ev.pubkey,
+        createdAt: ev.created_at,
+        label: `Vault co-signature on “${title}”`,
+        proposalId,
+      });
+    }
+  }
+  for (const post of feed) {
+    activity.push({
+      id: `post:${post.id}`,
+      type: "post",
+      author: post.author,
+      createdAt: post.createdAt,
+      label: post.content.length > 100 ? `${post.content.slice(0, 100)}…` : post.content,
+      postId: post.id,
+    });
+  }
+  for (const j of joinRequests) {
+    activity.push({
+      id: `join:${j.author}`,
+      type: "join",
+      author: j.author,
+      createdAt: j.createdAt,
+      label: j.note ? `Requested to join: “${j.note.slice(0, 60)}”` : "Requested to join the organization",
+    });
+  }
+  for (const ev of collectByKind(Kind.WalletShare)) {
+    if (!orgPubkey || ev.pubkey !== orgPubkey) continue;
+    const recipient = tagValue(ev, "p");
+    if (recipient) {
+      activity.push({
+        id: `share:${recipient}`,
+        type: "share",
+        author: orgPubkey,
+        createdAt: ev.created_at,
+        label: `Encrypted seed share sent to ${shortNpub(recipient)}`,
+      });
+    }
+  }
+  const configEvent = latest(Kind.OrgConfig, orgPubkey, ORG_ID);
+  if (configEvent) {
+    activity.push({
+      id: "config",
+      type: "config",
+      author: orgPubkey,
+      createdAt: configEvent.created_at,
+      label: configEvent.created_at === config?.createdAt ? "Organization created" : "Organization config updated",
+    });
+  }
+  activity.sort((a, b) => b.createdAt - a.createdAt);
+
   state = {
     orgPubkey,
     orgNpub: npubEncode(orgPubkey),
@@ -601,6 +731,7 @@ function rebuild() {
     proposals,
     feed,
     joinRequests,
+    activity: activity.slice(0, 200),
     loading: false,
     seedUnlocked: myRole === "admin" && store.seed !== null,
     myRole,
@@ -695,7 +826,8 @@ function requireSigner(): NostrSigner {
   return signer;
 }
 
-function requireSeed(): { seed: string; orgSk: Uint8Array; orgPubkey: string } {
+/** Unlock check + org key access for org-key-signed operations (org profile publishing). */
+export function requireSeed(): { seed: string; orgSk: Uint8Array; orgPubkey: string } {
   const orgPubkey = state.orgPubkey;
   if (!orgPubkey) throw new Error("No active org");
   if (!store.seed) throw new Error("Treasury is locked — unlock the org seed first");
@@ -1498,7 +1630,7 @@ export interface OrgPermissions {
 
 /** A governance change to the org configuration, applied after its proposal passes. */
 export interface ConfigChangeInput {
-  action: "setThreshold" | "addSigner" | "removeSigner" | "addMember" | "removeMember" | "setPermissions";
+  action: "setThreshold" | "addSigner" | "removeSigner" | "addMember" | "removeMember" | "setPermissions" | "setOrgProfile";
   /** setThreshold: the new M value. */
   threshold?: number;
   /** addSigner / removeSigner: the x-only key. */
@@ -1511,7 +1643,21 @@ export interface ConfigChangeInput {
   removeXOnly?: string;
   /** setPermissions: partial permission update. */
   permissions?: Partial<OrgPermissions>;
+  /** setOrgProfile: the org's public Nostr metadata, as submitted by the form. */
+  orgProfile?: OrgProfileInput;
 }
+
+/** The org's public Nostr profile fields (kind 0), edit via governance proposal. */
+export type OrgProfileInput = {
+  name?: string;
+  displayName?: string;
+  about?: string;
+  picture?: string;
+  banner?: string;
+  nip05?: string;
+  lud16?: string;
+  website?: string;
+};
 
 export interface ProposalInput {
   title: string;
@@ -1539,6 +1685,9 @@ export function configChangeSummary(change: ConfigChangeInput): string {
     if (change.permissions?.createProposal) parts.push(`proposals → ${change.permissions.createProposal}`);
     return `Update permissions: ${parts.join(", ") || "no change"}`;
   }
+  if (change.action === "setOrgProfile") {
+    return `Update the org's Nostr profile${change.orgProfile?.name ? ` (${change.orgProfile.name})` : ""}`;
+  }
   return `Add member ${change.memberNpub?.slice(0, 16) ?? ""}…`;
 }
 
@@ -1548,6 +1697,7 @@ function configChangeTitle(change: ConfigChangeInput): string {
   if (change.action === "removeSigner") return `Remove vault signer ${change.xOnly?.slice(0, 12) ?? ""}…`;
   if (change.action === "removeMember") return `Remove member ${shortNpub(change.memberNpub ?? "")}`;
   if (change.action === "setPermissions") return "Update content permissions";
+  if (change.action === "setOrgProfile") return "Update the org's Nostr profile";
   return `Add member ${shortNpub(change.memberNpub ?? "")}`;
 }
 
@@ -1619,6 +1769,15 @@ function validateConfigChange(change: ConfigChangeInput): void {
       (p.createProposal == null || p.createProposal === current.createProposal)
     ) {
       throw new Error("These permissions are already in effect");
+    }
+  } else if (change.action === "setOrgProfile") {
+    const p = change.orgProfile ?? {};
+    const entries = Object.entries(p).filter(([, v]) => v != null);
+    if (!entries.length) throw new Error("Fill in at least one profile field");
+    for (const [key, value] of entries) {
+      if (typeof value !== "string" || value.length > 2000) {
+        throw new Error(`Invalid profile field: ${key}`);
+      }
     }
   } else {
     throw new Error("Unknown config change");
@@ -1696,6 +1855,10 @@ export function canExecuteConfigChange(proposal: ProposalView): boolean {
     const proposalChanged = p.createProposal != null && p.createProposal !== current.createProposal;
     return feedChanged || proposalChanged;
   }
+  if (change.action === "setOrgProfile") {
+    const p = change.orgProfile ?? {};
+    return Object.values(p).some((v) => typeof v === "string" && v.length > 0 && v.length <= 2000);
+  }
   return false;
 }
 
@@ -1753,6 +1916,8 @@ export async function executeConfigChange(proposal: ProposalView): Promise<strin
       },
     };
     await publishOrgConfig(updated, orgSk, addr, config);
+  } else if (change.action === "setOrgProfile") {
+    await publishOrgProfile(change.orgProfile ?? {}, orgSk, orgPubkey);
   } else {
     const updated: OrgConfig = { ...config, threshold: change.threshold! };
     await publishOrgConfig(updated, orgSk, addr, config);
