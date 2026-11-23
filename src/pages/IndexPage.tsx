@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import ProposalImg from "../assets/proposals.png";
 import TreasuryImg from "../assets/treasury.png";
@@ -13,10 +13,10 @@ const useCases = [
 ];
 
 const productPreviews = [
-  ["01", "GOVERN", "Proposals & votes that just work", "Draft a proposal, attach a budget, and let members vote privately. Every proposal and vote is end-to-end encrypted to the organization's members.", "NIP-44 E2E · KIND 30052 · 8 / 12 VOTES", ProposalImg, "NOSTR GOVERNANCE"],
-  ["02", "CUSTODY", "A multisig your bank wishes it had", "Funds live in a Taproot multisig you control. M-of-N co-signers. Timelock recovery.", "TAPROOT VAULT · 3-OF-5 · 14 UTXOS", TreasuryImg, "BITCOIN TREASURY"],
-  ["03", "PAY", "Payments in seconds", "Pay contributors in USDB by the second, send grants over Lightning, or settle on-chain.", "LIGHTNING · 120,000 SATS · SETTLED", PaymentImg, "PAYMENTS / USDB"],
-  ["04", "COMMUNICATE", "Control your audience", "Publish signed updates to your own Nostr audience. Your identity and history stay portable.", "KIND 1 · 4 / 4 RELAYS · SIGNED BY DAO NPUB", FeedImg, "NOSTR FEED"],
+  ["01", "GOVERN", "Proposals & votes that just work", "Draft a proposal, attach a budget, and let members vote privately — every proposal and vote is end-to-end encrypted to the organization's members. Even the org's own rules change by vote: thresholds, signers, members, permissions.", "NIP-44 E2E · KIND 37000 · GOVERNANCE BY VOTE", ProposalImg, "NOSTR GOVERNANCE"],
+  ["02", "CUSTODY", "A treasury with two tiers", "A capped operational wallet for daily spending, and a Taproot M-of-N reserve for storage. Excess sweeps to cold storage; every reserve movement is co-signed by the council.", "HOT + COLD · TAPROOT M-OF-N · SIGNED SWEEPS", TreasuryImg, "BITCOIN TREASURY"],
+  ["03", "PAY", "Payments in seconds", "Pay contributors instantly over Lightning or USDB, within a cap your council sets. Larger amounts settle through the multisig — always against a passed proposal.", "LIGHTNING · USDB · CAPPED HOT WALLET", PaymentImg, "PAYMENTS / USDB"],
+  ["04", "COMMUNICATE", "An audience you control", "Publish signed updates to your own Nostr feed. Decide who may post, and keep your identity and history portable — outsiders can shout at relays, your org only hears members.", "KIND 1 · MEMBER-SIGNED · FORGERY-PROOF", FeedImg, "NOSTR FEED"],
 ];
 
 function MarkIcon({ type }: { type: "audit" | "descriptor" | "builder" | "privacy" }) {
@@ -25,35 +25,27 @@ function MarkIcon({ type }: { type: "audit" | "descriptor" | "builder" | "privac
 
 export function Index() {
   const [block, setBlock] = useState(905421);
-  const [email, setEmail] = useState("");
-  const [status, setStatus] = useState("");
 
   useEffect(() => {
     const timer = window.setInterval(() => setBlock((value) => value + 1), 600000);
     return () => window.clearInterval(timer);
   }, []);
 
-  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    setStatus("Request received. We will reply from a human address.");
-    setEmail("");
-  };
-
   return (
     <main className="public-site">
       <header className="site-header">
         <a className="wordmark" href="/" aria-label="BitMoot home">BIT<span>MOOT</span><b>.</b></a>
         <nav className="site-nav" aria-label="Main navigation"><a href="#use-cases">Use cases</a><a href="#stack">The stack</a><a href="#self-sovereign">Self-sovereign</a></nav>
-        <Link className="header-link" to="/auth">OPEN A TREASURY <span>↗</span></Link>
+        <Link className="header-link" to="/auth">REGISTER YOUR DAO <span>↗</span></Link>
       </header>
 
       <section className="hero-shell" aria-labelledby="hero-title">
         <div className="hero-copy">
           <p className="eyebrow"><i /> BITCOIN-NATIVE DAO INFRASTRUCTURE</p>
           <h1 id="hero-title">Vote on Nostr.<br /><em>Custody</em> on Taproot.<br />Pay over Lightning.</h1>
-          <p className="hero-summary">BitMoot is the operating layer for groups that govern together, hold their own keys, and move money without asking permission. Proposals and votes stay end-to-end encrypted for maximum privacy.</p>
-          <div className="hero-actions"><Link className="button-primary" to="/auth">Start a DAO <span>↗</span></Link><a className="quiet-link" href="#proof">View a live DAO <span>→</span></a></div>
-          <div className="trust-strip" aria-label="Trust signals"><a href="#proof"><MarkIcon type="audit" /> AUDIT LOG <span>verified</span></a><a href="#proof"><MarkIcon type="descriptor" /> DESCRIPTOR <span>bc1p…7k4q</span></a><a href="#self-sovereign"><MarkIcon type="privacy" /> E2E ENCRYPTED <span>proposals + votes</span></a><a href="https://hexquarter.com" target="_blank"><MarkIcon type="builder" /> BUILT BY <span>HexQuarter</span></a></div>
+          <p className="hero-summary">BitMoot is the operating layer for groups that govern together, hold their own keys, and move money without asking permission. Proposals and votes stay end-to-end encrypted for maximum privacy. Free to use — a small 1% fee on each validated payment keeps the lights on.</p>
+          <div className="hero-actions"><Link className="button-primary" to="/auth">Register your DAO <span>↗</span></Link><a className="quiet-link" href="#proof">View a live DAO <span>→</span></a></div>
+          <div className="trust-strip" aria-label="Trust signals"><a href="#proof"><MarkIcon type="audit" /> AUDIT LOG <span>verified</span></a><a href="#proof"><MarkIcon type="descriptor" /> DESCRIPTOR <span>bc1p…7k4q</span></a><a href="#self-sovereign"><MarkIcon type="privacy" /> E2E ENCRYPTED <span>proposals + votes</span></a><a href="#start"><MarkIcon type="builder" /> PRICING <span>free · 1% per payment</span></a><a href="https://hexquarter.com" target="_blank"><MarkIcon type="builder" /> BUILT BY <span>HexQuarter</span></a></div>
         </div>
 
         <div className="live-panel" aria-label="Live DAO demonstration">
@@ -67,7 +59,7 @@ export function Index() {
         <div className="annotation">← real state, not a promise</div>
       </section>
 
-      <section className="stats-band" aria-label="BitMoot facts"><div><strong>$0</strong><span>TO LAUNCH</span></div><div><strong>100%</strong><span>SELF-CUSTODY</span></div><div><strong>21M</strong><span>CAP FOREVER</span></div><div><strong>01</strong><span>STACK, END TO END</span></div></section>
+      <section className="stats-band" aria-label="BitMoot facts"><div><strong>FREE</strong><span>TO USE, NO SUBSCRIPTION</span></div><div><strong>1%</strong><span>PER VALIDATED PAYMENT</span></div><div><strong>100%</strong><span>SELF-CUSTODY</span></div><div><strong>01</strong><span>STACK, END TO END</span></div></section>
 
       <section className="index-section" id="use-cases" aria-labelledby="use-cases-title">
         <div className="section-marker">01 / WHO IT IS FOR</div>
@@ -80,9 +72,25 @@ export function Index() {
         <div className="product-pipeline">{productPreviews.map(([number, label, title, copy, meta, image, imageLabel], index) => <article className={`product-preview product-preview--${index + 1}`} key={number}><div className="preview-copy"><span className="preview-number">{number}</span><div><div className="preview-label">{label}</div><h3>{title}</h3><p>{copy}</p><div className="preview-meta">{meta}</div></div></div><div className="preview-frame"><div className="preview-frame-head"><span>{imageLabel}</span><span>BITMOOT / LIVE VIEW</span></div><img src={image} alt={`${title} preview from the BitMoot app`} /></div></article>)}</div>
       </section>
 
-      <section id="self-sovereign" className="sovereignty-section" aria-labelledby="sovereignty-title"><div className="sovereignty-heading"><div className="section-marker">04 / SELF-SOVEREIGNTY</div><h2 id="sovereignty-title">The rules stay visible.</h2><p>Self-custody is not a slogan in the interface. It is a set of inspectable choices.</p></div><div className="sovereignty-list"><article><b>01</b><div><h3>You hold the keys.</h3><p>Funds live in a multisig you control. We cannot pause, freeze, or rug you. Timelock recovery covers the missing signer.</p><code>RECOVERY / CSV 30 DAYS</code></div></article><article><b>02</b><div><h3>Private by design.</h3><p>Proposal details and votes are end-to-end encrypted to the organization's members with NIP-44. Outsiders see signed activity, not your internal decisions.</p><code>NIP-44 / E2E / MEMBER KEYS ONLY</code></div></article><article><b>03</b><div><h3>Stablecoin payroll is optional.</h3><p>Pay contributors in USDB so a bad week in the market does not become their problem. Volatility stays optional.</p><code>USDB / STREAMING / LIGHTNING</code></div></article><article><b>04</b><div><h3>Identity travels with the member.</h3><p>Members log in once and carry their reputation across Nostr-native apps. Your community is never locked in.</p><code>NOSTR NPUB / KIND 1 / PORTABLE</code></div></article></div></section>
+      <section id="self-sovereign" className="sovereignty-section" aria-labelledby="sovereignty-title"><div className="sovereignty-heading"><div className="section-marker">04 / SELF-SOVEREIGNTY</div><h2 id="sovereignty-title">The rules stay visible.</h2><p>Self-custody is not a slogan in the interface. It is a set of inspectable choices.</p></div><div className="sovereignty-list"><article><b>01</b><div><h3>You hold the keys.</h3><p>Funds live in a multisig you control. We cannot pause, freeze, or rug you. An operational wallet handles daily spending under a cap your council sets — everything else sleeps in cold storage.</p><code>RECOVERY / CSV 30 DAYS</code></div></article><article><b>02</b><div><h3>Private by design.</h3><p>Proposal details and votes are end-to-end encrypted to the organization's members with NIP-44. Every org event is pinned to a member key — outsiders can shout at relays, your organization only hears its members.</p><code>NIP-44 / E2E / MEMBER KEYS ONLY</code></div></article><article><b>03</b><div><h3>Stablecoin payroll is optional.</h3><p>Pay contributors in USDB so a bad week in the market does not become their problem. Volatility stays optional.</p><code>USDB / STREAMING / LIGHTNING</code></div></article><article><b>04</b><div><h3>Identity travels with the member.</h3><p>Members log in once and carry their reputation across Nostr-native apps. Your community is never locked in.</p><code>NOSTR NPUB / KIND 1 / PORTABLE</code></div></article><article><b>05</b><div><h3>A leak does not sink the ship.</h3><p>Rotate the wallet seed without losing your npub, proposals or feed history. The reserve vault never depended on it — and your records stay exactly where you left them.</p><code>ROTATION / HISTORY PRESERVED</code></div></article></div></section>
 
-      <section className="signup-section" id="start" aria-labelledby="signup-title"><div><div className="section-marker">05 / ACCESS</div><h2 id="signup-title">Bring a group.<br /><em>Keep the keys.</em></h2></div><form onSubmit={handleSubmit}><label htmlFor="email">EMAIL ADDRESS</label><div><input id="email" name="email" type="email" required value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@yourcollective.org" /><button type="submit">REQUEST ACCESS <span>↗</span></button></div><p>Your address is used for access updates only. No newsletter machinery.</p>{status && <output>{status}</output>}</form></section>
+      <section className="signup-section" id="start" aria-labelledby="signup-title">
+        <div>
+          <div className="section-marker">05 / ACCESS</div>
+          <h2 id="signup-title">Bring a group.<br /><em>Keep the keys.</em></h2>
+          <p className="signup-copy">Free to use — a small 1% fee is taken on each validated payment. No subscriptions, no custody, no seats to count.</p>
+        </div>
+        <div className="signup-cta">
+          <Link className="button-primary signup-button" to="/auth">REGISTER YOUR DAO <span>↗</span></Link>
+          <a className="quiet-link" href="/auth">Got an invite npub? Join with it <span>→</span></a>
+          <ul className="signup-points">
+            <li>NO EMAIL, NO WAITLIST — YOUR NOSTR KEY IS THE ACCOUNT</li>
+            <li>PASSKEY, NSEC OR EXTENSION — KEYS NEVER LEAVE THE DEVICE</li>
+            <li>OPERATIONAL WALLET + M-OF-N RESERVE FROM DAY ONE</li>
+            <li>GOVERNANCE BY VOTE — EVEN THE ORG'S OWN RULES</li>
+          </ul>
+        </div>
+      </section>
       <footer className="site-footer"><span>BITMOOT / 2026</span><span>PROOF, NOT PROMISES.</span><span>21M FOREVER.</span></footer>
     </main>
   );
