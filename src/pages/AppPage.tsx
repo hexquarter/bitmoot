@@ -21,7 +21,7 @@ import { useAuth } from "../lib/auth";
 import { useAutoSubmitPayments } from "../lib/autoPay";
 import { lockTreasury, shortNpub, useOrg } from "../lib/org";
 import { switchOrg, useMyOrgs } from "../lib/orgs";
-import { profileLabel, useProfile, useProfiles } from "../lib/profile";
+import { profileLabel, useProfile } from "../lib/profile";
 import { logOut } from "../lib/session";
 import { useSettings } from "../lib/settings";
 import { Avatar } from "../components/ui";
@@ -48,6 +48,9 @@ const accountNav: NavItem[] = [
 ];
 
 const orgRoutes = orgNav.filter((item) => !item.exact).map((item) => item.to);
+
+/** Shared micro-label style: 9px IBM Plex Mono, uppercase, wide tracking. */
+const caption = "font-mono text-[9px] uppercase tracking-[.1em]";
 
 export const AppPage = () => {
   const { pathname } = useLocation();
@@ -112,36 +115,55 @@ export const AppPage = () => {
   const renderItem = (item: NavItem) => {
     const active = item.exact ? pathname === item.to : pathname.startsWith(item.to);
     return (
-      <Link className={active ? "active" : ""} key={item.to} to={item.to}>
+      <Link
+        className={`mb-0.5 flex items-center gap-[11px] border-l border-transparent px-2.5 py-2.5 text-[13px] transition-colors duration-150 hover:text-ink-hi motion-reduce:transition-none ${
+          active ? "border-l-sats bg-bg-inset text-ink-hi [&>svg]:text-sats" : "text-ink-mid"
+        }`}
+        key={item.to}
+        to={item.to}
+      >
         <item.icon size={16} />
-        <span>{item.label}</span>
-        {item.to === "/app/proposals" && openProposals > 0 && <b>{openProposals}</b>}
+        <span className="flex-1">{item.label}</span>
+        {item.to === "/app/proposals" && openProposals > 0 && (
+          <b className="font-mono text-[9px] text-sats">{openProposals}</b>
+        )}
       </Link>
     );
   };
 
   return (
-    <div className="admin-shell">
-      <aside className="admin-sidebar">
-        <div className="admin-brand">
-          <Link to="/">BIT<span>MOOT</span><b>.</b></Link>
-          <small>{settings.network === "REGTEST" ? "TEST NETWORK" : "LIVE NETWORK"}</small>
+    /* Shell-wide design overrides: sharp corners, no shadows, no blur, flat panels. */
+    <div className="flex min-h-screen bg-bg-void font-display text-ink-hi [&_.rounded-full]:rounded-[2px] [&_.rounded-lg]:rounded-[2px] [&_.rounded-md]:rounded-[2px] [&_[class*='backdrop-blur']]:backdrop-blur-none [&_[class*='bg-gradient']]:bg-bg-panel [&_[class*='shadow-']]:shadow-none">
+      <aside className="sticky top-0 flex min-h-screen shrink-0 grow-0 basis-[232px] flex-col border-r border-rule bg-bg-panel px-3.5 pb-4 max-[640px]:hidden max-[900px]:basis-[190px]">
+        <div className="flex flex-col gap-1 border-b border-rule px-2.5 pt-[22px] pb-[18px]">
+          <Link className="font-mono text-[15px] font-semibold tracking-[.14em]" to="/">
+            BIT<span className="font-light">MOOT</span>
+            <b className="text-sats">.</b>
+          </Link>
+          <small className={`${caption} text-ink-low`}>
+            {settings.network === "REGTEST" ? "TEST NETWORK" : "LIVE NETWORK"}
+          </small>
         </div>
 
-        <details ref={orgSwitcherRef} className="org-switcher-shell">
-          <summary className="org-switcher" aria-label="Switch organization">
-            <span className="org-mark">
+        <details ref={orgSwitcherRef} className="relative [&>summary]:list-none [&>summary::-webkit-details-marker]:hidden">
+          <summary
+            aria-label="Switch organization"
+            className="mt-4 mb-6 flex w-full cursor-pointer items-center gap-[9px] border border-rule bg-bg-inset p-[9px] text-left transition-colors duration-150 hover:border-rule-strong motion-reduce:transition-none"
+          >
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center bg-sats font-mono text-[10px] font-semibold text-bg-void">
               {orgProfile?.picture
-                ? <img src={orgProfile.picture} alt="" style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: "inherit" }} />
+                ? <img src={orgProfile.picture} alt="" className="h-full w-full rounded-[inherit] object-cover" />
                 : orgName.slice(0, 2).toUpperCase()}
             </span>
-            <span>
-              <strong>{orgName}</strong>
-              <small>{org.orgNpub ? shortNpub(org.orgNpub) : "choose an organization"}</small>
+            <span className="flex min-w-0 flex-1 flex-col">
+              <strong className="text-xs font-medium">{orgName}</strong>
+              <small className={`mt-0.5 truncate ${caption} text-ink-low`}>
+                {org.orgNpub ? shortNpub(org.orgNpub) : "choose an organization"}
+              </small>
             </span>
-            <ChevronDown size={14} />
+            <ChevronDown size={14} className="shrink-0 text-ink-low" />
           </summary>
-          <div className="org-menu">
+          <div className="absolute inset-x-0 top-[calc(100%+4px)] z-30 max-h-[300px] overflow-auto border border-rule-strong bg-bg-panel">
             {orgs.length === 0 && <p className="px-3 py-2 text-[11px] text-muted-foreground">No organizations found yet.</p>}
             {orgs.map((item) => (
               <button
@@ -160,40 +182,55 @@ export const AppPage = () => {
           </div>
         </details>
 
-        <nav className="admin-nav" aria-label="Main navigation">
+        <nav className="flex-1" aria-label="Main navigation">
           {hasOrgAccess && (
             <>
-              <div className="nav-caption">{isAdmin ? "ORGANIZATION" : "ORGANIZATION · READ ONLY"}</div>
+              <div className={`px-2.5 pb-[9px] ${caption} text-ink-low`}>
+                {isAdmin ? "ORGANIZATION" : "ORGANIZATION · READ ONLY"}
+              </div>
               {orgNav.map(renderItem)}
             </>
           )}
-          <div className="nav-caption">{hasOrgAccess ? "YOUR ACCOUNT" : "NO ORGANIZATION YET"}</div>
+          <div className={`px-2.5 pb-[9px] ${caption} text-ink-low`}>
+            {hasOrgAccess ? "YOUR ACCOUNT" : "NO ORGANIZATION YET"}
+          </div>
           {accountNav.map(renderItem)}
         </nav>
 
-        <div className="network-status">
-          <i /> <span>CONNECTED</span>
-          <strong>{settings.relays.length} RELAYS {org.seedUnlocked ? "· WALLET OPEN" : ""}</strong>
-          <small>{settings.relays[0]}</small>
+        <div className={`grid grid-cols-[10px_1fr] gap-1 border-t border-rule px-[9px] pt-[18px] ${caption} text-ink-low`}>
+          <i className="h-1.5 w-1.5 rounded-full bg-stable" /> <span className="col-start-2">CONNECTED</span>
+          <strong className={`col-start-2 font-normal ${caption} text-ink-mid`}>
+            {settings.relays.length} RELAYS {org.seedUnlocked ? "· WALLET OPEN" : ""}
+          </strong>
+          <small className="col-start-2">{settings.relays[0]}</small>
         </div>
       </aside>
 
-      <div className="admin-main">
-        <header className="admin-header">
+      <div className="min-w-0 flex-1">
+        <header className="sticky top-0 z-[5] flex h-16 items-center justify-between border-b border-rule bg-[color-mix(in_srgb,var(--bg-void)_94%,transparent)] px-[clamp(18px,3vw,42px)] max-[640px]:h-[58px]">
           <div className="text-sm text-muted-foreground">
             {hasOrgAccess ? org.config?.name ?? "Your organization" : "Your Nostr account"}
             {hasOrgAccess && openProposals > 0 && (
               <span className="ml-2 text-primary">· {openProposals} proposals to review</span>
             )}
           </div>
-          <div className="admin-actions">
+          <div className="flex items-center gap-4">
             {hasOrgAccess && needsMyVote > 0 && (
-              <Link className="new-proposal flex items-center gap-2" to="/app/proposals" title={`${needsMyVote} proposal(s) waiting for your vote`}>
+              <Link
+                className="bg-primary flex items-center gap-2 border border-sats px-[11px] py-2 font-mono text-[10px] text-black transition-colors duration-150 motion-reduce:transition-none max-[640px]:gap-0 max-[640px]:p-2 max-[640px]:text-[0]"
+                to="/app/proposals"
+                title={`${needsMyVote} proposal(s) waiting for your vote`}
+              >
                 <Vote size={15} /> VOTE NOW{needsMyVote > 1 ? ` (${needsMyVote})` : ""}
               </Link>
             )}
             {hasOrgAccess && (
-              <Link className="new-proposal flex items-center gap-2" to="/app/proposals"><Plus size={15} /> NEW PROPOSAL</Link>
+              <Link
+                className="flex items-center gap-2 border border-sats px-[11px] py-2 font-mono text-[10px] text-sats transition-colors duration-150 hover:bg-sats hover:text-bg-void motion-reduce:transition-none max-[640px]:gap-0 max-[640px]:p-2 max-[640px]:text-[0]"
+                to="/app/proposals"
+              >
+                <Plus size={15} /> NEW PROPOSAL
+              </Link>
             )}
             <Link to="/app/profile" className="flex items-center gap-2">
               <Avatar name={profileLabel(signer.pubkey, profile)} src={profile?.picture} size={28} />
@@ -202,16 +239,30 @@ export const AppPage = () => {
               </small>
             </Link>
             {isAdmin && org.seedUnlocked && (
-              <button className="icon-button" type="button" aria-label="Lock treasury" title="Lock treasury" onClick={lockTreasury}>
+              <button
+                className="relative cursor-pointer border-0 bg-transparent text-ink-mid"
+                type="button"
+                aria-label="Lock treasury"
+                title="Lock treasury"
+                onClick={lockTreasury}
+              >
                 <Lock size={16} />
               </button>
             )}
-            <button className="icon-button" type="button" aria-label="Sign out" title="Sign out" onClick={handleSignOut}>
+            <button
+              className="relative cursor-pointer border-0 bg-transparent text-ink-mid"
+              type="button"
+              aria-label="Sign out"
+              title="Sign out"
+              onClick={handleSignOut}
+            >
               <LogOut size={16} />
             </button>
           </div>
         </header>
-        <main className="admin-content"><Outlet /></main>
+        <main className="mx-auto w-full max-w-[1440px] px-[clamp(18px,4vw,60px)] pt-[clamp(28px,4vw,56px)] pb-20">
+          <Outlet />
+        </main>
       </div>
     </div>
   );
