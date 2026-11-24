@@ -11,6 +11,8 @@ export type SparkNetwork = "MAINNET" | "REGTEST";
 export interface Settings {
   network: SparkNetwork;
   relays: string[];
+  /** Blossom media servers (BUD-01/02) used for image/video uploads. */
+  blossomServers?: string[];
   /** npub (bech32) of the organization workspace the app is pointed at. */
   activeOrgNpub?: string;
   /** Optional esplora-compatible API base for on-chain vault ops. */
@@ -28,9 +30,12 @@ export const DEFAULT_RELAYS = [
   "wss://relay.snort.social",
 ];
 
+export const DEFAULT_BLOSSOM_SERVERS = ["https://blossom.primal.net", "https://blossom.nostr.build"];
+
 const DEFAULTS: Settings = {
   network: "MAINNET",
   relays: [...DEFAULT_RELAYS],
+  blossomServers: [...DEFAULT_BLOSSOM_SERVERS],
 };
 
 function load(): Settings {
@@ -43,6 +48,9 @@ function load(): Settings {
       relays: Array.isArray(parsed.relays) && parsed.relays.length
         ? parsed.relays.filter((r) => typeof r === "string")
         : [...DEFAULT_RELAYS],
+      blossomServers: Array.isArray(parsed.blossomServers)
+        ? parsed.blossomServers.filter((r) => typeof r === "string" && r.length)
+        : [...DEFAULT_BLOSSOM_SERVERS],
       activeOrgNpub: typeof parsed.activeOrgNpub === "string" ? parsed.activeOrgNpub : undefined,
       explorerApiBase:
         typeof parsed.explorerApiBase === "string" ? parsed.explorerApiBase : undefined,

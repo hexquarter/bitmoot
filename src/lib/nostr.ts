@@ -6,6 +6,7 @@ import { getSettings } from "./settings";
  * Nostr transport layer.
  *
  * BitMoot-specific event kinds (custom, experimental):
+ *  - 5     Delete      — NIP-09 deletion request (e.g. retracting a feed post)
  *  - 30078 OrgConfig   — addressable org configuration, authored by the org key
  *  - 30079 WalletShare — NIP-44 encrypted org wallet seed, one event per recipient
  *  - 30080 VaultSigner — member's vault signer x-only pubkey
@@ -18,6 +19,10 @@ import { getSettings } from "./settings";
 export const Kind = {
   /** NIP-01 user profile metadata. */
   Profile: 0,
+  /** NIP-09 deletion request, tagging deleted event ids with `e` tags. */
+  Delete: 5,
+  /** NIP-01 short text note (the org feed). */
+  Note: 1,
   OrgConfig: 30078,
   WalletShare: 30079,
   VaultSigner: 30080,

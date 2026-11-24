@@ -2,12 +2,13 @@ import { useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import { Link } from "react-router-dom";
-import { Shield, Radio, Key, Globe2, Trash2, Plus, Check, Copy, Bitcoin, Zap, LogOut, UserRound, Code2, type LucideIcon } from "lucide-react";
+import { Shield, Radio, Key, Globe2, Trash2, Plus, Check, Copy, Bitcoin, Zap, LogOut, UserRound, Code2, Image as ImageIcon, type LucideIcon } from "lucide-react";
 import { useAuth } from "../../lib/auth";
 import { lockTreasury, npubToHex, proposeConfigChange, shortNpub, useOrg, orgWalletSeed } from "../../lib/org";
 import { hasProfileLoaded, profileLabel, profileSubtitle, saveOrgProfile, useProfile } from "../../lib/profile";
 import { logOut } from "../../lib/session";
 import { setSettings, useSettings, DEFAULT_RELAYS, type SparkNetwork } from "../../lib/settings";
+import { setBlossomServers } from "../../lib/blossom";
 import { disconnectOrgWallet } from "../../lib/spark";
 import { Avatar, Button, Field, Input } from "../../components/ui";
 
@@ -37,6 +38,7 @@ export function SettingsPage() {
 
   const [orgNpub, setOrgNpub] = useState(settings.activeOrgNpub ?? "");
   const [newRelay, setNewRelay] = useState("");
+  const [newBlossom, setNewBlossom] = useState("");
   const [explorer, setExplorer] = useState(settings.explorerApiBase ?? "");
   const [showMySeed, setShowMySeed] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
@@ -123,6 +125,20 @@ export function SettingsPage() {
   const removeRelay = (url: string) => {
     setSettings({ relays: settings.relays.filter((r) => r !== url) });
     toast.success("Relay removed");
+  };
+
+  const addBlossom = () => {
+    const url = newBlossom.trim().replace(/\/+$/, "");
+    if (!/^https?:\/\//.test(url)) return toast.error("Blossom server must start with https://");
+    if ((settings.blossomServers ?? []).includes(url)) return toast.error("Server already listed");
+    setBlossomServers([...(settings.blossomServers ?? []), url]);
+    setNewBlossom("");
+    toast.success("Media server added");
+  };
+
+  const removeBlossom = (url: string) => {
+    setBlossomServers((settings.blossomServers ?? []).filter((r) => r !== url));
+    toast.success("Media server removed");
   };
 
   const saveExplorer = () => {
@@ -316,6 +332,35 @@ export function SettingsPage() {
         >
           restore defaults
         </button>
+      </Section>
+
+      <Section icon={ImageIcon} title="Media servers" desc="Blossom servers (BUD-01/02) that store uploaded images and videos. Uploads are signed with your Nostr identity; the first server that accepts the blob wins.">
+        {(settings.blossomServers ?? []).map((r) => (
+          <div key={r} className="flex items-center justify-between rounded-md border border-border bg-bg-elev-2/40 px-3 py-2.5">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="h-1.5 w-1.5 rounded-full bg-[var(--green)]" />
+              <code className="text-sm font-mono truncate">{r}</code>
+            </div>
+            <button onClick={() => removeBlossom(r)} className="text-muted-foreground hover:text-destructive transition shrink-0">
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        ))}
+        <div className="flex gap-2">
+          <input
+            value={newBlossom}
+            onChange={(e) => setNewBlossom(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && addBlossom()}
+            placeholder="https://blossom.example.com"
+            className="flex-1 h-10 rounded-md border border-border bg-bg-elev-2/50 px-3 text-sm font-mono focus:outline-none focus:border-primary/60"
+          />
+          <button
+            onClick={addBlossom}
+            className="h-10 px-4 shrink-0 rounded-md border border-border text-sm hover:border-border-bright hover:text-primary transition flex items-center gap-1.5"
+          >
+            <Plus className="h-4 w-4" /> Add
+          </button>
+        </div>
       </Section>
 
       <Section icon={Bitcoin} title="Explorer API" desc="Esplora-compatible API for vault UTXOs and broadcast.">

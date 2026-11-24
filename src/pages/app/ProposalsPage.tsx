@@ -3,15 +3,15 @@ import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import {
   Plus, Vote, CheckCircle2, Clock, Gavel, Send, FileSignature, ExternalLink,
-  Eye, X, Code2, RefreshCw, Shield, ArrowRight,
+  Eye, X, Code2, RefreshCw, Shield, ArrowRight, MessageSquare,
 } from "lucide-react";
 import { useAuth } from "../../lib/auth";
 import { canPayDirectly, executeApprovedPayment } from "../../lib/autoPay";
 import { platformFeeDisplay } from "../../lib/fees";
 import {
-  canExecuteConfigChange, castVote, configChangeSummary, createProposal, createVaultSpend, cosignVaultSpend,
-  executeConfigChange, executeVaultSpend, getProposalDebugDetails, listVaultSignatures, proposeConfigChange,
-  proposalPaymentMethod, shortNpub, useOrg,
+  canExecuteConfigChange, canExecuteFeedPost, castVote, configChangeSummary, createProposal, createVaultSpend, cosignVaultSpend,
+  executeConfigChange, executeFeedPost, executeVaultSpend, getProposalDebugDetails, listVaultSignatures, proposeConfigChange,
+  proposeFeedPost, proposalPaymentMethod, shortNpub, useOrg,
   type ConfigChangeInput, type ContentPermission, type PaymentMethod, type ProposalDebugDetails, type ProposalView,
   type VaultSignatureView, type VoteChoice,
 } from "../../lib/org";
@@ -20,6 +20,7 @@ import { profileLabel, profileSubtitle, useProfiles } from "../../lib/profile";
 import { setSettings, useSettings } from "../../lib/settings";
 import { explorerUiBase } from "../../lib/vault";
 import { CopyButton } from "../../components/ui";
+import { NostrContent } from "../../components/NostrContent";
 import { OrgWalletNote } from "../../components/OrgWalletNote";
 
 const statusStyle: Record<string, string> = {
@@ -60,11 +61,14 @@ function NewProposal({ onDone }: { onDone: () => void }) {
   const org = useOrg();
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
-  const [type, setType] = useState<"payment" | "general" | "config">("payment");
+  const [type, setType] = useState<"payment" | "post" | "general" | "config">("payment");
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("lightning");
   const [amount, setAmount] = useState("");
   const [recipient, setRecipient] = useState("");
   const [busy, setBusy] = useState(false);
+  // feed-post proposal fields
+  const [postSubject, setPostSubject] = useState("");
+  const [postContent, setPostContent] = useState("");
   // governance (config) change fields
   const [action, setAction] = useState<ConfigChangeInput["action"]>("setThreshold");
   const [threshold, setThreshold] = useState(String(org.config?.threshold ?? 2));
@@ -139,6 +143,23 @@ function NewProposal({ onDone }: { onDone: () => void }) {
       }
       return;
     }
+    if (type === "post") {
+      if (!postContent.trim()) return toast.error("Write the post first");
+      setBusy(true);
+      try {
+        await proposeFeedPost({
+          content: postContent,
+          subject: postSubject.trim() || undefined,
+        });
+        toast.success("Post proposal published to Nostr — it goes to the feed when the vote passes");
+        onDone();
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : String(e));
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
     if (!title.trim()) return toast.error("Give the proposal a title");
     if (type === "payment" && !recipient.trim()) return toast.error("Add the payment recipient");
     if (type === "payment" && paymentMethod !== "lightning" && !Number(amount)) {
@@ -185,14 +206,40 @@ function NewProposal({ onDone }: { onDone: () => void }) {
           className="w-full rounded-md border border-border bg-bg-elev-2/50 px-3 py-2 text-sm focus:outline-none focus:border-primary/60 transition resize-none" />
       </div>
       <div className="flex gap-2">
-        {(["payment", "general", "config"] as const).map((t) => (
+        {(["payment", "post", "general", "config"] as const).map((t) => (
           <button key={t} onClick={() => setType(t)}
             className={"h-9 px-4 rounded-md text-xs font-mono uppercase tracking-wider border transition " +
               (type === t ? "border-primary/50 bg-primary-dim text-primary" : "border-border text-muted-foreground hover:text-foreground")}>
-            {t === "config" ? "governance" : t}
+            {t === "config" ? "governance" : t === "post" ? "feed post" : t}
           </button>
         ))}
       </div>
+      {type === "post" && (
+        <div className="space-y-4">
+          <div>
+            <label className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground">
+              Subject (optional, NIP-14)
+            </label>
+            <input value={postSubject} onChange={(e) => setPostSubject(e.target.value.slice(0, 120))}
+              placeholder="e.g. Quarterly update"
+              className={inputCls + " mt-1.5"} />
+          </div>
+          <div>
+            <label className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground">
+              Post content
+            </label>
+            <textarea value={postContent} onChange={(e) => setPostContent(e.target.value)} rows={5}
+              placeholder="The note that will be published to the feed… @mentions (nostr: URIs), #hashtags and media links embed for all Nostr clients."
+              className="w-full rounded-md border border-border bg-bg-elev-2/50 px-3 py-2 text-sm focus:outline-none focus:border-primary/60 transition resize-none" />
+            <div className="mt-1 text-[10px] font-mono text-muted-foreground-2">{postContent.length} chars</div>
+          </div>
+          <p className="text-[11px] text-muted-foreground-2">
+            The note publishes as a kind:1 event tagged to the org once this proposal gathers the current
+            threshold of yes-votes. The feed editor on the Feed page offers a richer toolbox (mention picker,
+            media, live preview).
+          </p>
+        </div>
+      )}
       {type === "config" && (
         <div className="space-y-4">
           <div>
@@ -333,7 +380,7 @@ function NewProposal({ onDone }: { onDone: () => void }) {
           )}
         </div>
       )}
-      {type !== "config" && (
+      {(type === "payment" || type === "general") && (
         <>
           <div>
             <label className="text-[11px] font-mono uppercase tracking-wider text-muted-foreground">Title</label>
@@ -478,6 +525,31 @@ function MakePaymentButton({ proposal }: { proposal: ProposalView }) {
       className="h-9 px-3 rounded-md bg-[var(--green)]/15 border border-[var(--green)]/30 text-xs font-medium text-[var(--green)] hover:opacity-90 transition flex items-center gap-2 disabled:opacity-50"
     >
       <Send className="h-3.5 w-3.5" /> {busy ? "Sending…" : "Make the payment"}
+    </button>
+  );
+}
+
+/** Publish a passed feed-post proposal to the org feed (NIP-01 note). */
+function PublishPostButton({ proposal }: { proposal: ProposalView }) {
+  const [busy, setBusy] = useState(false);
+  const publish = async () => {
+    setBusy(true);
+    try {
+      const noteId = await executeFeedPost(proposal);
+      toast.success(`Published to the feed · ${noteId.slice(0, 12)}…`);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button
+      onClick={publish}
+      disabled={busy}
+      className="h-9 px-3 rounded-md bg-[var(--green)]/15 border border-[var(--green)]/30 text-xs font-medium text-[var(--green)] hover:opacity-90 transition flex items-center gap-2 disabled:opacity-50"
+    >
+      <Send className="h-3.5 w-3.5" /> {busy ? "Publishing…" : "Publish to feed"}
     </button>
   );
 }
@@ -831,6 +903,24 @@ function ProposalReviewDialog({ proposal, onClose }: { proposal: ProposalView; o
             </div>
           )}
 
+          {proposal.type === "feedPost" && proposal.feedPost && (
+            <div className="rounded-md border border-primary/30 bg-primary-dim px-4 py-3">
+              <div className="flex items-center gap-2 text-sm font-medium text-primary">
+                <MessageSquare className="h-4 w-4" /> Feed post
+              </div>
+              {proposal.feedPost.subject && (
+                <div className="mt-1.5 text-sm font-medium">{proposal.feedPost.subject}</div>
+              )}
+              <div className="mt-1.5 text-sm leading-relaxed whitespace-pre-line break-words">
+                <NostrContent content={proposal.feedPost.content} />
+              </div>
+              <div className="mt-1.5 text-[11px] text-muted-foreground">
+                When this passes with the current threshold of yes-votes, it publishes to the org feed as a
+                standard kind:1 Nostr note{proposal.feedPost.replaceId ? " and retracts the note it edits" : ""}.
+              </div>
+            </div>
+          )}
+
           <div className="grid gap-3 sm:grid-cols-3">
             <ReviewStat label="Yes votes" value={String(proposal.yesCount)} />
             <ReviewStat label="No votes" value={String(proposal.noCount)} />
@@ -894,7 +984,23 @@ function ProposalReviewDialog({ proposal, onClose }: { proposal: ProposalView; o
             </div>
           )}
 
-          {proposal.executed && proposal.type !== "config" && (
+          {proposal.passed && !proposal.executed && proposal.type === "feedPost" && (
+            canExecuteFeedPost(proposal) ? (
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-[var(--green)]/30 bg-[var(--green)]/10 px-4 py-3">
+                <div className="flex items-center gap-2 text-sm">
+                  <CheckCircle2 className="h-4 w-4 text-[var(--green)]" /> Approved — publish the post to the feed.
+                </div>
+                <PublishPostButton proposal={proposal} />
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 rounded-md border border-[var(--green)]/30 bg-[var(--green)]/10 px-4 py-3 text-sm">
+                <CheckCircle2 className="h-4 w-4 text-[var(--green)]" /> Approved — awaiting publication by an
+                account with feed-posting permission.
+              </div>
+            )
+          )}
+
+          {proposal.executed && proposal.type !== "config" && proposal.type !== "feedPost" && (
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-[var(--blue)]/30 bg-[var(--blue)]/10 px-4 py-3">
               <div className="flex min-w-0 items-center gap-2 text-sm">
                 <CheckCircle2 className="h-4 w-4 text-[var(--blue)]" />
@@ -915,6 +1021,23 @@ function ProposalReviewDialog({ proposal, onClose }: { proposal: ProposalView; o
                   <ExternalLink className="h-3 w-3" /> View transaction
                 </a>
               )}
+            </div>
+          )}
+
+          {proposal.executed && proposal.type === "feedPost" && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-[var(--blue)]/30 bg-[var(--blue)]/10 px-4 py-3">
+              <div className="flex min-w-0 items-center gap-2 text-sm">
+                <CheckCircle2 className="h-4 w-4 text-[var(--blue)]" />
+                <div className="min-w-0">
+                  <div>Published to the feed</div>
+                  <div className="truncate font-mono text-[10px] text-muted-foreground">
+                    {proposal.execution?.txid ?? "reference unavailable"}
+                  </div>
+                </div>
+              </div>
+              <Link to="/app/feed" className="text-[11px] font-mono text-primary hover:underline flex items-center gap-1">
+                Open feed <ArrowRight className="h-3 w-3" />
+              </Link>
             </div>
           )}
 
@@ -1185,6 +1308,23 @@ export function ProposalsPage() {
                     <span className="text-[10px] font-mono text-muted-foreground-2 flex items-center gap-1">
                       <Gavel className="h-3 w-3" /> passed — no payment required
                     </span>
+                  )}
+                  {p.passed && !p.executed && p.type === "feedPost" && (
+                    canExecuteFeedPost(p) ? (
+                      <PublishPostButton proposal={p} />
+                    ) : (
+                      <span className="text-[10px] font-mono text-muted-foreground-2 flex items-center gap-1">
+                        <MessageSquare className="h-3 w-3" /> passed — awaiting publication
+                      </span>
+                    )
+                  )}
+                  {p.executed && p.type === "feedPost" && (
+                    <Link
+                      to="/app/feed"
+                      className="text-[10px] font-mono text-[var(--blue)] hover:underline flex items-center gap-1"
+                    >
+                      <MessageSquare className="h-3 w-3" /> published to the feed
+                    </Link>
                   )}
                   {p.passed && !p.executed && p.type === "payment" && !isOnchainVault && !method && (
                     <span className="text-[10px] font-mono text-muted-foreground-2 flex items-center gap-1">

@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { finalizeEvent } from "nostr-tools/pure";
-import { decode as nip19Decode, npubEncode } from "nostr-tools/nip19";
+import { decode as nip19Decode, neventEncode, npubEncode } from "nostr-tools/nip19";
+import * as nip10 from "nostr-tools/nip10";
 import * as nip44 from "nostr-tools/nip44";
 import type { Event, EventTemplate, VerifiedEvent } from "nostr-tools";
 import { Kind, publish, subscribe, query, orgAddressTag, parseJsonContent, tagValue, relays } from "./nostr";
@@ -211,9 +212,11 @@ export interface ProposalView {
   createdAt: number;
   title: string;
   body: string;
-  type: "payment" | "general" | "config";
+  type: "payment" | "general" | "config" | "feedPost";
   /** Set for config proposals: the governance change being voted on. */
   configChange?: ConfigChangeInput;
+  /** Set for feed-post proposals: the note that will be published when it passes. */
+  feedPost?: FeedPostPayload;
   /** Set for payment proposals so Payments can unlock only approved methods. */
   paymentMethod?: PaymentMethod;
   /** Invoice, Spark address, or Bitcoin address approved by the proposal. */
@@ -233,7 +236,7 @@ export interface ProposalView {
     txid: string;
     createdAt: number;
     reference?: string;
-    method?: PaymentMethod | "vault";
+    method?: PaymentMethod | "vault" | "config" | "feed";
   };
   psbtSigs: number;
 }
@@ -243,6 +246,20 @@ export interface FeedPost {
   author: string;
   content: string;
   createdAt: number;
+  /** Full NIP-01 tag list (threading, mentions, hashtags, quotes…). */
+  tags: string[][];
+  /** NIP-14 subject/title, when the post carries one. */
+  subject?: string;
+  /** Pubkeys mentioned via `p` tags (NIP-27). */
+  mentions: string[];
+  /** Hashtags from `t` tags (NIP-24). */
+  hashtags: string[];
+  /** NIP-10 thread root, when this post is a reply. */
+  rootId?: string;
+  /** NIP-10 immediate parent post id, when this post is a reply. */
+  replyToId?: string;
+  /** Event ids quoted via `q` tags (NIP-01 quoting). */
+  quotes: string[];
 }
 
 export interface JoinRequestView {
@@ -558,6 +575,7 @@ function rebuild() {
       amountUsd?: number;
       onchainAddress?: string;
       configChange?: ConfigChangeInput;
+      feedPost?: FeedPostPayload;
     }>(ev);
     if (!content) continue;
     const votes = votesByProposal.get(ev.id) ?? new Map();
@@ -569,14 +587,26 @@ function rebuild() {
       content.configChange && typeof content.configChange === "object" && content.configChange.action
         ? content.configChange
         : undefined;
+    const feedPost =
+      content.feedPost && typeof content.feedPost === "object" && typeof content.feedPost.content === "string"
+        ? content.feedPost
+        : undefined;
     proposals.push({
       id: ev.id,
       author: ev.pubkey,
       createdAt: ev.created_at,
       title: content.title,
       body: content.body,
-      type: content.type === "payment" ? "payment" : content.type === "config" ? "config" : "general",
+      type:
+        content.type === "payment"
+          ? "payment"
+          : content.type === "config"
+            ? "config"
+            : content.type === "feedPost"
+              ? "feedPost"
+              : "general",
       configChange,
+      feedPost,
       paymentMethod:
         content.type !== "payment"
           ? undefined
@@ -597,10 +627,24 @@ function rebuild() {
   }
   proposals.sort((a, b) => b.createdAt - a.createdAt);
 
-  // feed (kind 1) — member posts only; outsiders cannot write into the feed
+  // feed (kind 1) — member posts tagged to this org only; outsiders and
+  // members' personal (untagged) notes cannot appear in the feed
+  const orgAddr = orgAddress(orgPubkey);
+  const deletedIds = new Map<string, string>(); // event id → deleting pubkey (NIP-09)
+  for (const ev of collectByKind(Kind.Delete)) {
+    for (const t of ev.tags) if (t[0] === "e" && t[1]) deletedIds.set(t[1], ev.pubkey);
+  }
   const feed: FeedPost[] = [...store.events.values()]
-    .filter((ev) => ev.kind === 1 && memberPubkeys.has(ev.pubkey))
-    .map((ev) => ({ id: ev.id, author: ev.pubkey, content: ev.content, createdAt: ev.created_at }))
+    .filter(
+      (ev) =>
+        ev.kind === Kind.Note &&
+        memberPubkeys.has(ev.pubkey) &&
+        ev.tags.some((t) => t[0] === "a" && t[1] === orgAddr) &&
+        // NIP-09: keep the post unless its own author retracted it (a kind:5
+        // signed by someone else does not delete someone's post)
+        deletedIds.get(ev.id) !== ev.pubkey,
+    )
+    .map(feedPostFromEvent)
     .sort((a, b) => b.createdAt - a.createdAt)
     .slice(0, 200);
 
@@ -652,14 +696,16 @@ function rebuild() {
     const isMigration = e.proposalId.startsWith("migration:");
     activity.push({
       id: `exec:${e.proposalId}`,
-      type: e.method === "config" ? "config" : "payment",
+      type: e.method === "config" ? "config" : e.method === "feed" ? "post" : "payment",
       author: e.author,
       createdAt: e.createdAt,
       label: isMigration
         ? "Retired vault swept into the current vault"
         : e.method === "config"
           ? "Configuration change applied"
-          : `Payment executed · ${e.reference.slice(0, 24)}`,
+          : e.method === "feed"
+            ? "Post published to the feed"
+            : `Payment executed · ${e.reference.slice(0, 24)}`,
       proposalId: isMigration ? undefined : e.proposalId,
     });
   }
@@ -743,14 +789,44 @@ function latest(kind: number, author: string, d: string): Event | undefined {
   return store.byKindAuthorD.get(`${kind}:${author}:${d}`);
 }
 
+/**
+ * Derive a view-model post from a raw kind:1 event: NIP-10 threading,
+ * NIP-27 mentions (`p` tags), NIP-24 hashtags (`t` tags), NIP-01 quotes
+ * (`q` tags) and the NIP-14 subject.
+ */
+export function feedPostFromEvent(ev: Event): FeedPost {
+  const thread = nip10.parse(ev);
+  const mentions: string[] = [];
+  const hashtags: string[] = [];
+  const quotes: string[] = [];
+  for (const t of ev.tags) {
+    if (t[0] === "p" && t[1] && !mentions.includes(t[1])) mentions.push(t[1]);
+    else if (t[0] === "t" && t[1] && !hashtags.includes(t[1])) hashtags.push(t[1]);
+    else if (t[0] === "q" && t[1] && !quotes.includes(t[1])) quotes.push(t[1]);
+  }
+  return {
+    id: ev.id,
+    author: ev.pubkey,
+    content: ev.content,
+    createdAt: ev.created_at,
+    tags: ev.tags,
+    subject: tagValue(ev, "subject"),
+    mentions,
+    hashtags,
+    rootId: thread.root?.id,
+    replyToId: thread.reply?.id,
+    quotes,
+  };
+}
+
 function collectByKind(kind: number): Event[] {
   const out: Event[] = [];
   for (const [key, ev] of store.byKindAuthorD) {
     if (ev.kind === kind) out.push(ev);
     void key;
   }
-  // plain (non-addressable) events like kind 1 live in store.events
-  if (kind === 1) return [...store.events.values()].filter((ev) => ev.kind === 1);
+  // plain (non-addressable) events like kind 1 and kind 5 live in store.events
+  if (kind === 1 || kind === Kind.Delete) return [...store.events.values()].filter((ev) => ev.kind === kind);
   return out;
 }
 
@@ -800,7 +876,8 @@ function ensureSubscribed() {
         Kind.Vote,
         Kind.Execution,
         Kind.JoinRequest,
-        1,
+        Kind.Note,
+        Kind.Delete,
       ],
     },
     (event) => ingest(event),
@@ -1662,13 +1739,32 @@ export type OrgProfileInput = {
 export interface ProposalInput {
   title: string;
   body: string;
-  type: "payment" | "general" | "config";
+  type: "payment" | "general" | "config" | "feedPost";
   paymentMethod?: PaymentMethod;
   payee?: string;
   amountSats?: number;
   amountUsd?: number;
   onchainAddress?: string;
   configChange?: ConfigChangeInput;
+  /** Feed-post proposals carry the note to publish once the vote passes. */
+  feedPost?: FeedPostPayload;
+}
+
+/**
+ * The payload of a feed-post proposal: composed with the feed editor, voted on
+ * by the members, and published as a NIP-01 note when the proposal passes.
+ */
+export interface FeedPostPayload {
+  /** NIP-14 subject/title, optional. */
+  subject?: string;
+  /** The full note content: NIP-27 `nostr:` mentions, #hashtags, media URLs. */
+  content: string;
+  /** NIP-10: the note this post will reply to. */
+  replyToId?: string;
+  /** NIP-01: the note this post will quote. */
+  quoteOfId?: string;
+  /** NIP-09: when set, execution retracts this note and publishes the new one (edit flow). */
+  replaceId?: string;
 }
 
 const X_ONLY_KEY_RE = /^[0-9a-f]{64}$/;
@@ -2011,19 +2107,249 @@ export async function recordPaymentExecution(
   ingest(ev);
 }
 
-export async function publishFeedPost(text: string): Promise<void> {
+/** Options for publishing a rich feed post (NIP-01/10/14/21/27/24/89). */
+export interface FeedPostOptions {
+  /** NIP-14 subject/title line. */
+  subject?: string;
+  /** Post this one replies to (NIP-10 threading). */
+  replyTo?: FeedPost;
+  /** Post this one quotes (NIP-01 `q` tag + NIP-21 URI in content). */
+  quoteOf?: FeedPost;
+}
+
+/** First configured relay, used as a hint in `q`/`nevent` references. */
+function primaryRelayHint(): string | undefined {
+  return relays()[0];
+}
+
+/** Extract mentioned pubkeys from `nostr:npub1…` / bare `npub1…` references. */
+function mentionedPubkeys(content: string): string[] {
+  const out: string[] = [];
+  for (const m of content.matchAll(/(?:nostr:)?(npub1[0-9a-z]{20,})/g)) {
+    try {
+      const { type, data } = nip19Decode(m[1]);
+      if (type === "npub" && typeof data === "string" && !out.includes(data)) out.push(data);
+    } catch {
+      /* not a valid npub — leave it as text */
+    }
+  }
+  return out;
+}
+
+/** Extract `#hashtag` values from plain text (URL fragments are not hashtags). */
+function hashtagsIn(content: string): string[] {
+  const out: string[] = [];
+  for (const m of content.matchAll(/(?<=^|\s)#([\p{L}\p{N}_-]+)/gu)) {
+    if (!out.includes(m[1])) out.push(m[1]);
+  }
+  return out.slice(0, 20);
+}
+
+/**
+ * Publish an org feed post as a fully NIP-compatible kind:1 note:
+ *
+ *  - `a` tag to the org address (the org feed subscription key)
+ *  - `p` tags for every NIP-27 `nostr:` mention plus thread participants
+ *  - `t` tags for every NIP-24 hashtag in the text
+ *  - NIP-10 `e` tags with root/reply markers when replying
+ *  - NIP-01 `q` + `p` tags when quoting, with the NIP-21 `nostr:nevent1…`
+ *    reference appended to the content so any client can render the quote
+ *  - NIP-14 `subject` tag when a title is set
+ *  - NIP-89 `client` tag so other clients can attribute the post
+ */
+export async function publishFeedPost(text: string, opts: FeedPostOptions = {}): Promise<string> {
   const orgPubkey = state.orgPubkey;
   if (!orgPubkey) throw new Error("No active org");
   if (!canPublishFeed()) {
-    throw new Error("Posting to the org feed is restricted to administrators");
+    throw new Error("Posting to the org feed is restricted by the org permissions");
   }
+
+  let content = text;
+  const tags: string[][] = [["a", orgAddress(orgPubkey)]];
+
+  // NIP-27 mentions → p tags
+  for (const pubkey of mentionedPubkeys(content)) tags.push(["p", pubkey]);
+
+  // NIP-24 hashtags → t tags
+  for (const tag of hashtagsIn(content)) tags.push(["t", tag]);
+
+  // NIP-10 threading when replying
+  if (opts.replyTo) {
+    const thread = nip10.parse({ tags: opts.replyTo.tags });
+    const rootId = thread.root?.id ?? opts.replyTo.id;
+    tags.push(["e", rootId, "", "root"]);
+    if (opts.replyTo.id !== rootId) tags.push(["e", opts.replyTo.id, "", "reply"]);
+    // participants of the thread: the parent author, the root author, and
+    // everyone the parent mentioned
+    for (const pubkey of new Set([
+      opts.replyTo.author,
+      ...(thread.root?.author ? [thread.root.author] : []),
+      ...opts.replyTo.mentions,
+    ])) {
+      if (!tags.some((t) => t[0] === "p" && t[1] === pubkey)) tags.push(["p", pubkey]);
+    }
+  }
+
+  // NIP-01 quoting: q tag + quoted-author p tag + NIP-21 URI in the content
+  if (opts.quoteOf) {
+    const relayHint = primaryRelayHint();
+    tags.push(relayHint ? ["q", opts.quoteOf.id, relayHint] : ["q", opts.quoteOf.id]);
+    if (!tags.some((t) => t[0] === "p" && t[1] === opts.quoteOf!.author)) {
+      tags.push(["p", opts.quoteOf.author]);
+    }
+    const uri = `nostr:${neventEncode({
+      id: opts.quoteOf.id,
+      relays: relayHint ? [relayHint] : undefined,
+      author: opts.quoteOf.author,
+      kind: Kind.Note,
+    })}`;
+    if (!content.includes(uri)) content = `${content}\n\n${uri}`;
+  }
+
+  // NIP-14 subject
+  if (opts.subject?.trim()) tags.push(["subject", opts.subject.trim()]);
+
+  // NIP-89 client attribution
+  tags.push(["client", "BitMoot", window.location.origin]);
+
   const ev = await signAsMe({
-    kind: 1,
+    kind: Kind.Note,
     created_at: now(),
-    tags: [["a", orgAddress(orgPubkey)]],
-    content: text,
+    tags,
+    content,
   });
   await publish(ev);
+  ingest(ev);
+  return ev.id;
+}
+
+/** Title for a feed-post proposal, derived from the payload. */
+export function feedPostProposalTitle(post: FeedPostPayload): string {
+  if (post.subject?.trim()) return post.subject.trim();
+  const firstLine = post.content.split("\n")[0].trim();
+  return firstLine.length > 60 ? `${firstLine.slice(0, 60)}…` : firstLine || "Feed post";
+}
+
+/**
+ * Submit a composed feed post as a voted proposal. The note is NOT published
+ * yet: it is encrypted for the members like every other proposal, and only
+ * becomes a real NIP-01 note when the proposal passes and is executed.
+ */
+export async function proposeFeedPost(post: FeedPostPayload, title?: string): Promise<void> {
+  const orgPubkey = state.orgPubkey;
+  if (!orgPubkey) throw new Error("No active org");
+  requireMember();
+  if (!canCreateProposal()) {
+    throw new Error("Creating proposals is restricted by the org permissions");
+  }
+  const content = post.content.trim();
+  if (!content) throw new Error("Write something first");
+  await createProposal({
+    type: "feedPost",
+    title: title?.trim() || feedPostProposalTitle(post),
+    body: content,
+    feedPost: { ...post, content },
+  });
+}
+
+/** True when a passed feed-post proposal can still be published to the feed. */
+export function canExecuteFeedPost(proposal: ProposalView): boolean {
+  return (
+    proposal.type === "feedPost" &&
+    proposal.passed &&
+    !proposal.executed &&
+    Boolean(proposal.feedPost?.content) &&
+    canPublishFeed()
+  );
+}
+
+/** Resolve a referenced note for execution-time threading/quotes. */
+async function resolvePostReference(id: string): Promise<FeedPost> {
+  const known = state.feed.find((p) => p.id === id);
+  if (known) return known;
+  const [ev] = await query({ ids: [id] }, 5000);
+  if (!ev) throw new Error("A referenced note is not available on the relays yet — try again shortly");
+  return feedPostFromEvent(ev);
+}
+
+/**
+ * Publish a passed feed-post proposal: sign the NIP-01 note as the executor,
+ * then record the execution so the same proposal cannot publish twice.
+ * When the payload edits an existing note, the original is retracted (NIP-09).
+ */
+export async function executeFeedPost(proposal: ProposalView): Promise<string> {
+  const orgPubkey = state.orgPubkey;
+  if (!orgPubkey) throw new Error("No active org");
+  if (proposal.type !== "feedPost") throw new Error("This is not a feed-post proposal");
+  if (proposal.executed) throw new Error("This proposal has already been published");
+  if (!proposal.passed) throw new Error("The proposal has not passed yet");
+  const payload = proposal.feedPost;
+  if (!payload?.content) throw new Error("This proposal carries no post content");
+  if (!canPublishFeed()) {
+    throw new Error("Publishing to the feed is restricted by the org permissions");
+  }
+
+  const replyTo = payload.replyToId ? await resolvePostReference(payload.replyToId) : undefined;
+  const quoteOf = payload.quoteOfId ? await resolvePostReference(payload.quoteOfId) : undefined;
+  const noteId = await publishFeedPost(payload.content, {
+    subject: payload.subject,
+    replyTo,
+    quoteOf,
+  });
+
+  if (payload.replaceId) {
+    try {
+      await deleteFeedPost(payload.replaceId);
+    } catch {
+      /* the retraction failing does not invalidate the publication */
+    }
+  }
+
+  const ev = await signAsMe({
+    kind: Kind.Execution,
+    created_at: now(),
+    tags: [["d", proposal.id], ["a", orgAddress(orgPubkey)], ["e", proposal.id]],
+    content: JSON.stringify({
+      txid: noteId,
+      proposalId: proposal.id,
+      method: "feed",
+      noteId,
+      ...(payload.replaceId ? { replaced: payload.replaceId } : {}),
+    }),
+  });
+  await publish(ev);
+  ingest(ev);
+  return noteId;
+}
+
+/**
+ * Retract a feed post with NIP-09: a kind:5 event tagging the post id. Relays
+ * and other clients treat posts deleted by their author as removed.
+ */
+export async function deleteFeedPost(postId: string, reason?: string): Promise<void> {
+  const orgPubkey = state.orgPubkey;
+  if (!orgPubkey) throw new Error("No active org");
+  const ev = await signAsMe({
+    kind: Kind.Delete,
+    created_at: now(),
+    // `e` marks the deleted event (NIP-09); the `a` tag lets the deletion flow
+    // through the org feed subscription so members see the retraction live.
+    tags: [["e", postId], ["a", orgAddress(orgPubkey)]],
+    content: reason ?? "",
+  });
+  await publish(ev);
+  ingest(ev);
+}
+
+/** NIP-19 `nevent1…` pointer for a post, usable as a portable `nostr:` URI. */
+export function feedPostNevent(post: Pick<FeedPost, "id" | "author">): string {
+  const relayHint = primaryRelayHint();
+  return neventEncode({
+    id: post.id,
+    relays: relayHint ? [relayHint] : undefined,
+    author: post.author,
+    kind: Kind.Note,
+  });
 }
 
 // ---------------------------------------------------------------------------
