@@ -188,7 +188,7 @@ export const AppPage = () => {
           </div>
           <div className="admin-actions">
             {hasOrgAccess && needsMyVote > 0 && (
-              <Link className="new-proposal" to="/app/proposals" title={`${needsMyVote} proposal(s) waiting for your vote`}>
+              <Link className="new-proposal flex items-center gap-2" to="/app/proposals" title={`${needsMyVote} proposal(s) waiting for your vote`}>
                 <Vote size={15} /> VOTE NOW{needsMyVote > 1 ? ` (${needsMyVote})` : ""}
               </Link>
             )}
