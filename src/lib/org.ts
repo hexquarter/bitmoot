@@ -271,15 +271,13 @@ export interface JoinRequestView {
 
 export type OrgActivityType =
   | "proposal"
-  | "vote"
   | "payment"
   | "config"
-  | "cosign"
   | "post"
   | "join"
   | "share";
 
-/** One entry of the org's unified history (proposals, votes, payments, posts…). */
+/** One entry of the org's unified history (proposals, payments, posts…). */
 export interface OrgActivityItem {
   id: string;
   type: OrgActivityType;
@@ -663,37 +661,40 @@ function rebuild() {
   joinRequests.sort((a, b) => b.createdAt - a.createdAt);
 
   // -----------------------------------------------------------------------
-  // Unified history: proposals, votes, payments, config changes, cosigns,
-  // posts, join requests, seed shares — newest first. Replaceable events
-  // (votes, shares) keep their latest version per key, as published.
+  // Unified history: proposals, payments, config changes, posts, join
+  // requests, seed shares — newest first. Replaceable events (shares) keep
+  // their latest version per key, as published.
+  // Individual votes are never listed: the activity only shows the
+  // proposal lifecycle (new / completed / refused), never who voted for what.
   // -----------------------------------------------------------------------
   const proposalTitles = new Map(proposals.map((p) => [p.id, p.title]));
   const activity: OrgActivityItem[] = [];
+  // Individual votes and co-signatures are deliberately NOT listed — the
+  // activity must not reveal who voted for what. Proposals appear once as
+  // pending, then as completed or refused.
   for (const p of proposals) {
+    // Refused: not passed, and even if every member who has not voted no
+    // voted yes, the threshold could no longer be reached.
+    const refused =
+      !p.executed && !p.passed && Math.max(0, memberPubkeys.size - p.noCount) < threshold;
     activity.push({
       id: `proposal:${p.id}`,
       type: "proposal",
       author: p.author,
-      createdAt: p.createdAt,
-      label: `Proposal: ${p.title}`,
+      createdAt: p.executed ? (p.execution?.createdAt ?? p.createdAt) : p.createdAt,
+      label: p.executed
+        ? `Proposal completed: ${p.title}`
+        : refused
+          ? `Proposal refused: ${p.title}`
+          : `New proposal: ${p.title}`,
       proposalId: p.id,
     });
   }
-  for (const [proposalId, votes] of votesByProposal) {
-    const title = proposalTitles.get(proposalId) ?? "a proposal";
-    for (const v of votes.values()) {
-      activity.push({
-        id: `vote:${proposalId}:${v.author}`,
-        type: "vote",
-        author: v.author,
-        createdAt: v.createdAt,
-        label: `Voted ${v.choice} on “${title}”`,
-        proposalId,
-      });
-    }
-  }
+  // Completed proposals are already listed above; only surface executions
+  // without a matching proposal (vault migrations, orphaned executions).
   for (const e of executionEvents) {
     const isMigration = e.proposalId.startsWith("migration:");
+    if (!isMigration && proposalTitles.has(e.proposalId)) continue;
     activity.push({
       id: `exec:${e.proposalId}`,
       type: e.method === "config" ? "config" : e.method === "feed" ? "post" : "payment",
@@ -708,19 +709,6 @@ function rebuild() {
             : `Payment executed · ${e.reference.slice(0, 24)}`,
       proposalId: isMigration ? undefined : e.proposalId,
     });
-  }
-  for (const [proposalId, authors] of psbtByProposal) {
-    const title = proposalTitles.get(proposalId) ?? "a proposal";
-    for (const ev of authors.values()) {
-      activity.push({
-        id: `cosign:${proposalId}:${ev.pubkey}`,
-        type: "cosign",
-        author: ev.pubkey,
-        createdAt: ev.created_at,
-        label: `Vault co-signature on “${title}”`,
-        proposalId,
-      });
-    }
   }
   for (const post of feed) {
     activity.push({

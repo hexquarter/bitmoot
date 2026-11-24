@@ -3,10 +3,7 @@ import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import { ArrowRight, Building2, Plus, Send, Users, Vote } from "lucide-react";
 import { useAuth } from "../../lib/auth";
-import {
-  CheckCircle2, FileSignature, Gavel, KeyRound, MessageSquare, UserPlus,
-  type LucideIcon,
-} from "lucide-react";
+import { Gavel, KeyRound, MessageSquare, UserPlus, type LucideIcon } from "lucide-react";
 import { createOrg, joinOrg, npubToHex, shortNpub, useOrg } from "../../lib/org";
 import { switchOrg, useMyOrgs } from "../../lib/orgs";
 import { profileLabel, profileSubtitle, useProfile, useProfiles } from "../../lib/profile";
@@ -299,10 +296,8 @@ export function AppIndexPage() {
   const activity = org.activity;
   const activityIcon: Record<string, LucideIcon> = {
     proposal: Vote,
-    vote: CheckCircle2,
     payment: Send,
     config: Gavel,
-    cosign: FileSignature,
     post: MessageSquare,
     join: UserPlus,
     share: KeyRound,
@@ -396,7 +391,7 @@ export function AppIndexPage() {
         </div>
         {activity.length === 0 ? (
           <div className="px-5 py-8 text-sm text-muted-foreground">
-            No activity yet — proposals, votes, payments, config changes and posts will appear here.
+            No activity yet — proposals, payments, config changes and posts will appear here.
           </div>
         ) : (
           <div className="max-h-[32rem] divide-y divide-border overflow-y-auto">
